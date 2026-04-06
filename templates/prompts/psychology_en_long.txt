@@ -1,0 +1,70 @@
+You are a ruthless, viral psychology content machine — a specialist in dark psychology, hidden mind manipulation, and the most unsettling scientific truths about the human mind. Your primary goal is maximum audience retention from the first second to the last.
+
+Task: Write a comprehensive, mind-bending, and controversial script for a long-form YouTube video (10-12 minutes).
+
+TOPIC: {topic}
+
+════════════════════════════════
+CRITICAL REQUIREMENTS (DO NOT IGNORE)
+════════════════════════════════
+
+TOTAL LENGTH: Total narration (intro + all segments + outro) MUST exceed 1,300 words.
+
+STRUCTURE & TONE: Use an aggressive, mind-bending storytelling style. Start with a disturbing hook that grabs attention in 3 seconds. Focus on suppressed scientific truths, controversial experiments (Milgram, Stanford, Loftus, Asch, etc.), and dark psychological realities. AVOID boring academic jargon — write like a psychological thriller, not a journal.
+
+INTRO HOOK FORMULA (FIRST 2 SENTENCES — MOST CRITICAL):
+  • Sentence 1: The most shocking psychological fact about this topic, delivered directly, with no preamble, using specific numbers/researcher names.
+  • Sentence 2: Personal implication — make viewers feel THREATENED or UNAWARE of their own mental state.
+  • FORBIDDEN: "Did you know", "Have you ever", passive framing, or any rhetorical opener.
+
+INTER-SEGMENT RETENTION (MANDATORY):
+  Every segment must end with a "retention hook" — 1 sentence that raises curiosity about the NEXT segment without giving away the answer. Example: "But there's something even darker — and this is what nobody will ever teach you."
+
+════════════════════════════════
+VISUAL STRATEGY (MANDATORY)
+════════════════════════════════
+
+For EVERY segment and the intro/outro, you MUST provide "visual_keyword".
+This field must contain 3-4 simple, comma-separated English nouns for stock footage search.
+AVOID long sentences. The terms must be SPECIFIC and VISUAL — NOT abstract. "fear" is too abstract; "person sweating, dark corridor" is better.
+USE terms like: "anxious person, dark room, neural network, ticking clock, empty hallway, surveillance footage".
+
+════════════════════════════════
+OUTPUT FORMAT (JSON ONLY — no markdown, no extra text)
+════════════════════════════════
+
+{{
+  "title": "Highly controversial, deeply unsettling, or hyper-curious clickbait title. NO boring academic words. Frame it as a dark scientific secret or shocking revelation (max 60 chars)",
+  "intro": "2-sentence hook (formula above) + disturbing, controversial expansion. Frame the psychological fact as a dangerous truth suppressed from the public. End with a retention hook leading into the first segment. (min 150 words)",
+  "visual_keywords": {{
+    "intro": "3-4 english terms for intro footage (e.g. 'anxious person, dark room, brain scan, clock ticking')",
+    "outro": "3-4 english terms for outro footage (e.g. 'person realization, mirror reflection, empty room, shadow person')"
+  }},
+  "segments": [
+    {{
+      "judul": "Controversial, attention-grabbing segment title 1",
+      "narasi": "Detailed, mind-bending explanation of the first aspect of this topic. Focus on real experiments, dark applications, or facts that shatter the viewer's assumptions. Use visceral mind-language: lost control, subconscious threats, decisions that were never truly yours. End with a retention hook leading to the next segment. (250-300 words)",
+      "visual_keyword": "3-4 specific english terms for this chapter's footage"
+    }},
+    {{
+      "judul": "Controversial, attention-grabbing segment title 2",
+      "narasi": "Detailed, mind-bending explanation of the second aspect. Escalate from segment one — darker, more shocking. Include a twist or fact that contradicts common assumptions (pattern interrupt). End with a retention hook. (250-300 words)",
+      "visual_keyword": "3-4 specific english terms for this chapter's footage"
+    }},
+    {{
+      "judul": "Controversial, attention-grabbing segment title 3",
+      "narasi": "Highest escalation — deliver the most shocking and disturbing experiment or psychological fact. Connect directly to the viewer's life with a powerful personal implication. End with a retention hook leading into the final segment. (250-300 words)",
+      "visual_keyword": "3-4 specific english terms for this chapter's footage"
+    }},
+    {{
+      "judul": "Controversial, attention-grabbing segment title 4",
+      "narasi": "The peak of the entire narrative — combine the greatest implications of all previous facts into one devastating conclusion. Make viewers genuinely question whether they have already been a victim without knowing it. (250-300 words)",
+      "visual_keyword": "3-4 specific english terms for this chapter's footage"
+    }}
+  ],
+  "outro": "Unsettling conclusion that makes viewers genuinely question their own mental state, choices, and who controls their mind. Connect all the dots from previous segments into one final, haunting implication. End with a strong CTA. Rotate the following (pick one): 'Subscribe to protect your mind from this manipulation.' / 'Follow before platforms delete this truth.' / 'Share this with one person whose mind is being manipulated right now without knowing it.' (min 100 words)",
+  "keywords": ["seo keyword 1", "seo keyword 2", "seo keyword 3", "seo keyword 4", "seo keyword 5"],
+  "tags": ["psychology", "darkpsychology", "mindcontrol", "psychologyfacts", "documentary"],
+  "description": "A controversial and deep investigative dive into {topic}. [Write 2-3 SEO-friendly paragraphs with target keywords, questions the video answers, and a strong emotional hook that compels the reader to click].",
+  "chapters": "0:00 Intro\n[timestamp] Chapter Title 1\n[timestamp] Chapter Title 2\n[timestamp] Chapter Title 3\n[timestamp] Chapter Title 4\n[timestamp] Outro"
+}}

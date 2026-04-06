@@ -1,0 +1,141 @@
+# ══════════════════════════════════════════════════════════════
+#   MESIN CUAN VIRAL ARCHITECT v5 — .gitignore
+#   ⚠️  File-file di bawah ini TIDAK AKAN PERNAH masuk ke Git.
+# ══════════════════════════════════════════════════════════════
+
+
+# ── SECRETS & CREDENTIALS (KRITIS / CRITICAL) ────────────────
+.env
+.env.*
+skills for IDE/
+skills/
+!.env.example
+*.bak
+
+# OAuth2 token & session files
+token.json
+tokens.json
+token_*.json
+*.pickle
+*.pkl
+*_token.json
+oauth_credentials.json
+
+# Google/YouTube credentials
+config/credentials/
+config/secrets/
+**/client_secret*.json
+**/service_account*.json
+**/google_credentials*.json
+credentials.json
+.agents/skills/      # (Diperbaiki: Sebelumnya .agent/skills typo tanpa 's')
+
+
+# ── DATA & CACHE ─────────────────────────────────────────────
+data/
+data/**
+.ipynb_checkpoints/  # Cache jika kamu pakai Jupyter Notebook
+
+
+# ── OUTPUT, TEMP FILES & IMAGES ──────────────────────────────
+output/
+temp/
+tmp/
+input/
+render/
+
+# Media hasil render (Audio/Video berat)
+*.mp4
+*.mp3
+*.wav
+*.aac
+*.ogg
+*.flac
+*.webm
+*.mkv
+*.mov
+
+# Gambar temp/hasil generate (Bisa menuhin repo)
+*.jpg
+*.jpeg
+*.png
+*.gif
+*.webp
+
+# Subtitle & teks temp
+*.ass
+*.srt
+*.vtt
+
+
+# ── LOGS ─────────────────────────────────────────────────────
+logs/
+*.log
+*.log.*
+
+
+# ── PYTHON RUNTIME & BINARIES (FILE APLIKASI) ────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# File Eksekusi & Installer (Mencegah Claude Setup.exe masuk)
+*.exe
+*.dll
+*secret*.json
+config/google_client_secret.json
+*.bin
+
+
+# ── VIRTUAL ENVIRONMENTS ─────────────────────────────────────
+venv/
+.venv/
+env/
+.env_backup/
+ENV/
+
+
+# ── IDE, EDITOR & AI TOOLS ───────────────────────────────────
+.vscode/
+.idea/
+.cursor/             # File sampah/cache dari Cursor AI IDE
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+pyrightconfig.json
+
+
+# ── OPERATING SYSTEM ─────────────────────────────────────────
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+ehthumbs.db
+desktop.ini
+
+
+# ── ASSETS (BERAT / LARGE FILES) ─────────────────────────────
+assets/music/
+assets/sfx/
+# Font boleh di-commit (kecil)
+# assets/fonts/ → TIDAK diignore
+
+
+# ══════════════════════════════════════════════════════════════
+#   © 2026 Arya Rizky | @aryarizky04
+# ══════════════════════════════════════════════════════════════

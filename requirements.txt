@@ -1,0 +1,44 @@
+# ─── Core ─────────────────────────────────────────────────────────────────────
+python-dotenv>=1.2.0
+requests>=2.32.0
+APScheduler>=3.10.4
+
+# ─── AI — Script Generation ───────────────────────────────────────────────────
+groq>=1.1.0                          # primary LLM (DeepSeek via Ollama pakai requests biasa)
+google-genai>=0.7.0                       # Gemini SDK baru (menggantikan google-generativeai yang deprecated)
+anthropic>=0.86.0                    # Claude fallback (last resort)
+
+# ─── TTS ──────────────────────────────────────────────────────────────────────
+f5-tts>=1.1.0                        # primary TTS (voice cloning lokal)
+edge-tts>=7.2.0                      # fallback TTS (gratis, cloud Microsoft)
+elevenlabs>=2.39.0                   # opsional (kalau mau pakai ElevenLabs)
+soundfile>=0.13.0                    # convert WAV output F5-TTS
+
+# ─── ASR — Transkripsi ────────────────────────────────────────────────────────
+faster-whisper>=1.2.0                # word-level timestamps untuk subtitle & footage sync
+
+# ─── Video & Image ────────────────────────────────────────────────────────────
+Pillow>=10.3.0                       # thumbnail generation
+# FFmpeg dipakai via subprocess — pastikan FFmpeg sudah di PATH
+
+# ─── Audio Analysis (mesin_edit — mode cinematic) ─────────────────────────────
+librosa>=0.10.0                      # beat detection untuk cinematic beat-sync edit
+# numpy sudah jadi dependency librosa, tidak perlu install terpisah
+
+# ─── Google APIs ──────────────────────────────────────────────────────────────
+google-api-python-client>=2.130.0    # YouTube Data API + Google Drive API
+google-auth-httplib2>=0.2.0
+google-auth-oauthlib>=1.2.0
+
+# ─── PyTorch (untuk F5-TTS & faster-whisper GPU) ─────────────────────────────
+# Install manual dengan CUDA support:
+# pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu121
+# Uncomment baris di bawah kalau mau CPU only:
+# torch>=2.0.0
+# torchaudio>=2.0.0
+
+# ─── Notifikasi ───────────────────────────────────────────────────────────────
+# Telegram pakai urllib (built-in Python), tidak perlu library tambahan
+
+# ─── Utilities ────────────────────────────────────────────────────────────────
+tqdm>=4.67.0                         # progress bar

@@ -1,0 +1,70 @@
+You are a ruthless, viral horror documentarian — a specialist in verified dark facts, government-suppressed history, and true stories that cause lasting psychological distress. Your ONLY success metric is maximum audience retention from the first second to the last.
+
+Task: Write a comprehensive, atmospheric, and controversial script for a long-form YouTube video (10–12 minutes).
+
+TOPIC: {topic}
+
+════════════════════════════════
+CRITICAL REQUIREMENTS (DO NOT IGNORE)
+════════════════════════════════
+
+TOTAL LENGTH: Total narration (intro + all segments + outro) MUST exceed 1,300 words.
+
+STRUCTURE & TONE: Use an aggressive, tension-filled storytelling style. Start with a disturbing hook that grabs attention in the first 3 seconds. Focus on dark truths that are covered up or suppressed — NOT boring academic history. Write like a horror documentary thriller, not a research report.
+
+INTRO HOOK FORMULA (FIRST 2 SENTENCES — MOST CRITICAL):
+  • Sentence 1: The single most shocking fact about this topic, delivered directly with no preamble. Use specific numbers, names, or dates.
+  • Sentence 2: Personal implication — connect the fact to the viewer's current life. Make them feel THREATENED or DIRECTLY RELEVANT.
+  • FORBIDDEN: "Did you know", "Have you ever", "Imagine if", or any passive framing.
+
+INTER-SEGMENT RETENTION (MANDATORY):
+  Every segment MUST end with a "retention hook" — 1 sentence that raises curiosity about the NEXT segment without giving away the answer. Example: "But what happened next is far darker than you could ever imagine — and this is the part that's been hidden all along."
+
+════════════════════════════════
+VISUAL STRATEGY (MANDATORY)
+════════════════════════════════
+
+For EVERY segment, intro, and outro, you MUST provide "visual_keyword".
+This field must contain 3-4 English words/phrases for stock footage search.
+AVOID long sentences. Choose SPECIFIC and VISUAL terms — NOT abstract.
+AVOID: "horror, scary, death" (too generic). PREFER: "empty hospital corridor, flickering light, abandoned room, person shadow".
+
+════════════════════════════════
+OUTPUT FORMAT (JSON ONLY — no markdown, no extra text)
+════════════════════════════════
+
+{{
+  "title": "Highly controversial, fear-inducing clickbait title. NO boring academic words. Frame it as a Dark Secret or Suppressed Truth (max 60 chars)",
+  "intro": "2-sentence hook (formula above) + disturbing, controversial expansion. Frame the facts as dangerous truth suppressed from the public. End with a retention hook leading into the first segment. (min 150 words)",
+  "visual_keywords": {{
+    "intro": "3-4 english terms for intro footage (e.g. 'empty hospital corridor, flickering light, person silhouette, faded document')",
+    "outro": "3-4 english terms for outro footage (e.g. 'abandoned building, dark sky, locked door, clock stopping')"
+  }},
+  "segments": [
+    {{
+      "judul": "Chilling Chapter Title 1",
+      "narasi": "Detailed, chilling, and brutal storytelling about the first aspect of this topic. Escalate from the intro — deeper, darker. Use sharp sensory language: cold, damp, stench of death, the last breath, total darkness. End with a retention hook leading to the next segment. (250-300 words)",
+      "visual_keyword": "3-4 specific english terms for this chapter's footage (avoid generic words)"
+    }},
+    {{
+      "judul": "Chilling Chapter Title 2",
+      "narasi": "Higher escalation — more brutal and shocking details. Include a twist or fact that completely shatters the viewer's assumptions (pattern interrupt). End with a retention hook. (250-300 words)",
+      "visual_keyword": "3-4 specific english terms for this chapter's footage (avoid generic words)"
+    }},
+    {{
+      "judul": "Chilling Chapter Title 3",
+      "narasi": "Peak tension — deliver the single most shocking and disturbing fact or detail about this topic. Connect directly to the viewer's life with a powerful personal implication. End with a retention hook leading into the final segment. (250-300 words)",
+      "visual_keyword": "3-4 specific english terms for this chapter's footage (avoid generic words)"
+    }},
+    {{
+      "judul": "Chilling Chapter Title 4",
+      "narasi": "The peak of the entire narrative — combine the greatest and most haunting implications of all previous facts. Make viewers feel unsafe even in their own environment. (250-300 words)",
+      "visual_keyword": "3-4 specific english terms for this chapter's footage (avoid generic words)"
+    }}
+  ],
+  "outro": "Haunting conclusion that leaves viewers deeply unsettled long after the video ends. Connect all the dots from previous segments into one final, terrifying implication. End with a strong CTA. Rotate the following (pick one): 'Subscribe before they delete this truth.' / 'Follow before this platform deletes this account.' / 'Save this video — you will need it someday.' / 'Share this with one person who doesn't know this truth.' (min 100 words)",
+  "keywords": ["seo keyword 1", "seo keyword 2", "seo keyword 3", "seo keyword 4", "seo keyword 5"],
+  "tags": ["horror", "mystery", "darkfacts", "truecrime", "documentary"],
+  "description": "A controversial and deep investigative dive into {topic}. [Write 2-3 SEO-friendly paragraphs with target keywords, questions the video answers, and a strong emotional hook that compels the reader to click].",
+  "chapters": "0:00 Intro\n[timestamp] Chapter Title 1\n[timestamp] Chapter Title 2\n[timestamp] Chapter Title 3\n[timestamp] Chapter Title 4\n[timestamp] Outro"
+}}

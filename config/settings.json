@@ -1,0 +1,121 @@
+{
+  "channels": [
+    {
+      "id": "ch_id_horror",
+      "name": "Horror Facts ID",
+      "language": "id",
+      "niche": "horror_facts",
+      "upload_quota_per_day": 6,
+      "credentials_file": "config/credentials/ch_id_horror_token.json",
+      "google_client_secret": "config/secrets/ch_id_horror_secret.json",
+      "elevenlabs_voice_id": "ACRfKVNOAnzVitkYerdl",
+      "voice_sample": "assets/voices/ch_id_horror.wav",
+      "active": true
+    },
+    {
+      "id": "ch_horror_id",
+      "name": "Horror ID (alias)",
+      "language": "id",
+      "niche": "horror_facts",
+      "upload_quota_per_day": 6,
+      "credentials_file": "config/credentials/ch_id_horror_token.json",
+      "google_client_secret": "config/secrets/ch_id_horror_secret.json",
+      "elevenlabs_voice_id": "ACRfKVNOAnzVitkYerdl",
+      "voice_sample": "assets/voices/ch_id_horror.wav",
+      "active": true
+    },
+    {
+      "id": "ch_id_psych",
+      "name": "Psikologi ID",
+      "language": "id",
+      "niche": "psychology",
+      "upload_quota_per_day": 6,
+      "credentials_file": "config/credentials/ch_id_psych_token.json",
+      "google_client_secret": "config/secrets/ch_id_psych_secret.json",
+      "elevenlabs_voice_id": "56AoDkrOh6qfVPDXZ7Pt",
+      "voice_sample": "assets/voices/ch_id_psych.wav",
+      "active": true
+    },
+    {
+      "id": "ch_en_horror",
+      "name": "Horror Facts EN",
+      "language": "en",
+      "niche": "horror_facts",
+      "upload_quota_per_day": 6,
+      "credentials_file": "config/credentials/ch_en_horror_token.json",
+      "google_client_secret": "config/secrets/ch_en_horror_secret.json",
+      "elevenlabs_voice_id": "pNInz6obpg8n9fm89itO",
+      "voice_sample": "assets/voices/ch_en_horror.wav",
+      "active": true
+    },
+    {
+      "id": "ch_en_psych",
+      "name": "Psychology EN",
+      "language": "en",
+      "niche": "psychology",
+      "upload_quota_per_day": 6,
+      "credentials_file": "config/credentials/ch_en_psych_token.json",
+      "google_client_secret": "config/secrets/ch_en_psych_secret.json",
+      "elevenlabs_voice_id": "ErXw7NLlbny7LqB0OT",
+      "voice_sample": "assets/voices/ch_en_psych.wav",
+      "active": true
+    }
+  ],
+
+  "daily_plan": {
+    "shorts": 1,
+    "long_form": 0
+  },
+
+  "video_profiles": {
+    "shorts": {
+      "width": 1080,
+      "height": 1920,
+      "fps": 24,
+      "min_duration_sec": 25,
+      "max_duration_sec": 58,
+      "music_volume": 0.12
+    },
+    "long_form": {
+      "width": 1920,
+      "height": 1080,
+      "fps": 30,
+      "min_duration_sec": 240,
+      "max_duration_sec": 330,
+      "clips_per_segment": 3,
+      "music_volume": 0.18
+    }
+  },
+
+  "footage": {
+    "clips_per_video": 7,
+    "footage_repeat_cooldown_days": 30
+  },
+
+  "upload": {
+    "privacy": "private",
+    "category_id": "27",
+    "youtube_made_for_kids": false,
+    "embeddable": true,
+    "public_stats_viewable": true,
+    "license": "youtube",
+    "contains_synthetic_media": true,
+    "delay_between_uploads_sec": 45
+  },
+
+  "upload_strategy": {
+    "id": {
+      "shorts_publish_hours_wib": [7, 10, 13, 17, 22],
+      "long_form_publish_hour_wib": 20
+    },
+    "en": {
+      "shorts_publish_hours_wib": [21, 1, 9, 14, 18],
+      "long_form_publish_hour_wib": 8
+    }
+  },
+
+  "ai_disclosure": {
+    "has_synthetic_audio": true,
+    "has_altered_visual": true
+  }
+}

@@ -1,0 +1,128 @@
+{
+  "_readme": {
+    "cara_pakai": "Set 'active: true' di campaign yang mau dijalankan, lalu python main.py",
+    "schedule.type": "range | specific_dates | weekdays",
+    "range": "Render video untuk setiap hari dari start_date sampai end_date",
+    "specific_dates": "Render video hanya di tanggal-tanggal yang disebutkan",
+    "weekdays": "Render video di hari-hari tertentu dalam rentang start_date sampai end_date",
+    "weekday_values": [
+      "monday",
+      "tuesday",
+      "wednesday",
+      "thursday",
+      "friday",
+      "saturday",
+      "sunday"
+    ],
+    "shorts_per_day": "Jumlah Shorts per hari per channel",
+    "long_form_per_day": "Jumlah Long Form per hari per channel (0 = tidak ada)",
+    "publish_hours_wib": "Jam upload ke YouTube (WIB). Jumlah harus = shorts + long_form",
+    "all_channels": "Semua channel pakai config yang sama",
+    "per_channel": "Tiap channel bisa berbeda. Key = channel id di settings.json",
+    "proteksi_double": "Otomatis skip slot yang sudah pernah di-render (cek data/booked_slots.json)"
+  },
+  "campaigns": [
+    {
+      "id": "batch_7_hari",
+      "name": "Batch 7 Hari ke Depan",
+      "active": true,
+      "schedule": {
+        "type": "range",
+        "start_date": "2026-03-29",
+        "end_date": "2026-03-31"
+      },
+      "per_channel": {
+        "ch_id_horror": {
+          "shorts_per_day": 1,
+          "long_form_per_day": 0,
+          "publish_hours_wib": [7, 10, 13, 17, 22]
+        },
+        "ch_id_psych": {
+          "shorts_per_day": 1,
+          "long_form_per_day": 0,
+          "publish_hours_wib": [7, 10, 13, 17, 22]
+        },
+        "ch_en_horror": {
+          "shorts_per_day": 1,
+          "long_form_per_day": 0,
+          "publish_hours_wib": [21, 1, 9, 14, 18]
+        },
+        "ch_en_psych": {
+          "shorts_per_day": 1,
+          "long_form_per_day": 0,
+          "publish_hours_wib": [21, 1, 9, 14, 18]
+        }
+      }
+    },
+    {
+      "id": "batch_per_channel",
+      "name": "Batch Per Channel Berbeda",
+      "active": false,
+      "schedule": {
+        "type": "range",
+        "start_date": "2026-03-22",
+        "end_date": "2026-03-28"
+      },
+      "per_channel": {
+        "ch_id_horror": {
+          "shorts_per_day": 2,
+          "long_form_per_day": 0,
+          "publish_hours_wib": [7, 17]
+        },
+        "ch_id_psych": {
+          "shorts_per_day": 1,
+          "long_form_per_day": 0,
+          "publish_hours_wib": [10]
+        },
+        "ch_en_horror": {
+          "shorts_per_day": 2,
+          "long_form_per_day": 0,
+          "publish_hours_wib": [9, 21]
+        },
+        "ch_en_psych": {
+          "shorts_per_day": 1,
+          "long_form_per_day": 0,
+          "publish_hours_wib": [14]
+        }
+      }
+    },
+    {
+      "id": "tanggal_acak",
+      "name": "Upload Tanggal Tertentu Saja",
+      "active": false,
+      "schedule": {
+        "type": "specific_dates",
+        "dates": [
+          "2026-05-26",
+          "2026-04-28",
+          "2026-04-30"
+        ]
+      },
+      "all_channels": {
+        "shorts_per_day": 1,
+        "long_form_per_day": 0,
+        "publish_hours_wib": [17]
+      }
+    },
+    {
+      "id": "senin_rabu_jumat",
+      "name": "Upload Senin Rabu Jumat",
+      "active": false,
+      "schedule": {
+        "type": "weekdays",
+        "weekdays": [
+          "monday",
+          "wednesday",
+          "friday"
+        ],
+        "start_date": "2026-03-22",
+        "end_date": "2026-04-30"
+      },
+      "all_channels": {
+        "shorts_per_day": 1,
+        "long_form_per_day": 0,
+        "publish_hours_wib": [17]
+      }
+    }
+  ]
+}
