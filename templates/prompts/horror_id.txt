@@ -61,7 +61,7 @@ Wajib menghasilkan 3–4 instruksi visual/B-roll yang spesifik dan actionable un
 Setiap instruksi harus mendeskripsikan: GAMBAR APA + EFEK APA + DI MOMEN SCRIPT MANA.
 Contoh format: "Saat narasi '...tawa yang tidak bisa dihentikan' → tampilkan footage rumah sakit kosong di malam hari + efek glitch merah + slow motion."
 
-⚠️ LANGUAGE RULE — OUTPUT WAJIB ENGLISH:
+⚠️ LANGUAGE RULE — OUTPUT WAJIB BERBAHASA Indonesia :
 Field `visual_cues` dan `keywords` HARUS ditulis DALAM BAHASA INGGRIS, bukan Bahasa Indonesia.
 Ini wajib karena digunakan sebagai search query ke database stock footage (Pixabay/Pexels) yang hanya mengindeks konten dalam English.
 Contoh BENAR: "abandoned hospital, flickering light, dark corridor"
@@ -88,7 +88,7 @@ FORMAT OUTPUT (JSON MURNI — tidak ada teks lain, tidak ada markdown)
   "title": "Judul clickbait sangat kontroversial dan memicu rasa takut (max 70 karakter)",
   "script": "Teks narasi lengkap — WAJIB 80-120 kata, dimulai dengan hook formula 2-kalimat",
   "hook_type": "Satu label: 'stat_attack' | 'personal_threat' | 'conspiracy_reveal' | 'body_horror' | 'historical_shock'",
-  "keywords": ["english keyword 1", "english keyword 2", "english keyword 3", "english keyword 4", "english keyword 5"],
+  "keywords": ["keyword 1", "keyword 2", "keyword 3", "keyword 4", "keyword 5"],
   "tags": ["#faktahoror", "#faktagelap", "#horror", "#shorts"],
   "description": "Penyelaman mengerikan ke dalam {topic}. Kebenarannya lebih buruk dari yang kamu bayangkan. #shorts #horor",
   "visual_cues": [

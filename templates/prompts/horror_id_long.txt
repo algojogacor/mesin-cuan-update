@@ -67,7 +67,7 @@ OUTPUT FORMAT (HANYA JSON — tidak ada markdown, tidak ada teks lain)
     }}
   ],
   "outro": "Kesimpulan yang menghantui dan membuat penonton merasa tidak nyaman lama setelah video berakhir. Hubungkan semua titik dari segmen sebelumnya menjadi satu implikasi final yang mengerikan. Akhiri dengan CTA kuat. Rotasi CTA berikut (pilih satu): 'Subscribe sebelum mereka hapus kebenaran ini.' / 'Follow sebelum platform ini menghapus akun ini.' / 'Simpan video ini — kamu akan butuh ini suatu hari nanti.' / 'Bagikan ke satu orang yang tidak tahu kebenaran ini.' (min 100 kata)",
-  "keywords": ["english seo keyword 1", "english seo keyword 2", "english seo keyword 3", "english seo keyword 4", "english seo keyword 5"],
+  "keywords": ["seo keyword 1", "seo keyword 2", "seo keyword 3", "seo keyword 4", "seo keyword 5"],
   "tags": ["horor", "misteri", "faktagelap", "kisahnyata", "dokumenter"],
   "description": "Investigasi kontroversial dan mendalam mengenai {topic}. [Tulis minimal 2-3 paragraf deskripsi SEO-friendly yang memuat kata kunci target, pertanyaan yang dijawab video, dan hook emosional yang kuat].",
   "chapters": "0:00 Intro\n[timestamp] Judul Babak 1\n[timestamp] Judul Babak 2\n[timestamp] Judul Babak 3\n[timestamp] Judul Babak 4\n[timestamp] Outro"

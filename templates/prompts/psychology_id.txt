@@ -62,7 +62,7 @@ Wajib menghasilkan 3–4 instruksi visual/B-roll yang spesifik dan actionable un
 Setiap instruksi harus mendeskripsikan: GAMBAR APA + EFEK APA + DI MOMEN SCRIPT MANA.
 Contoh format: "Saat narasi '...65% orang bersedia membunuh' → tampilkan footage orang di kursi eksperimen + efek glitch merah + slow motion."
 
-⚠️ LANGUAGE RULE — OUTPUT WAJIB ENGLISH:
+⚠️ LANGUAGE RULE:
 Field `visual_cues` dan `keywords` HARUS ditulis DALAM BAHASA INGGRIS, bukan Bahasa Indonesia.
 Ini wajib karena digunakan sebagai search query ke database stock footage (Pixabay/Pexels) yang hanya mengindeks konten dalam English.
 Contoh BENAR: "experiment room, brain neurons glowing, distortion effect"
@@ -89,7 +89,7 @@ FORMAT OUTPUT (JSON MURNI — tidak ada teks lain, tidak ada markdown)
   "title": "Judul clickbait sangat kontroversial dan memicu rasa tidak nyaman (max 70 karakter)",
   "script": "Teks narasi lengkap — WAJIB 80-120 kata, dimulai dengan hook formula 2-kalimat",
   "hook_type": "Satu label: 'mind_control' | 'false_memory' | 'social_compliance' | 'identity_threat' | 'hidden_experiment'",
-  "keywords": ["english keyword 1", "english keyword 2", "english keyword 3", "english keyword 4", "english keyword 5"],
+  "keywords": ["keyword 1", "keyword 2", "keyword 3", "keyword 4", "keyword 5"],
   "tags": ["#psychology", "#psychologyfacts", "#darkpsychology", "#shorts"],
   "description": "Penyelaman mengerikan ke dalam {topic}. Pikiranmu membohongimu. [2-3 kalimat menarik] #shorts #psychology",
   "visual_cues": [

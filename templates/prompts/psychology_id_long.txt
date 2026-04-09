@@ -67,7 +67,7 @@ OUTPUT FORMAT (JSON MURNI — tidak ada markdown, tidak ada teks lain)
     }}
   ],
   "outro": "Kesimpulan meresahkan yang membuat penonton mempertanyakan kondisi mental dan pilihan mereka sendiri. Hubungkan semua titik dari segmen sebelumnya menjadi satu implikasi final yang menggetarkan. Akhiri dengan CTA kuat. Rotasi CTA berikut (pilih satu): 'Subscribe untuk melindungi pikiranmu dari manipulasi ini.' / 'Follow sebelum platform ini menghapus kebenaran ini.' / 'Bagikan ke seseorang yang pikirannya sedang dimanipulasi tanpa sadar.' (min 100 kata)",
-  "keywords": ["english seo keyword 1", "english seo keyword 2", "english seo keyword 3", "english seo keyword 4", "english seo keyword 5"],
+  "keywords": ["seo keyword 1", "seo keyword 2", "seo keyword 3", "seo keyword 4", "seo keyword 5"],
   "tags": ["psikologi", "psikologigelap", "darkpsychology", "faktapsikologi", "manipulasi"],
   "description": "Investigasi kontroversial dan mendalam mengenai {topic}. [Tulis minimal 2-3 paragraf deskripsi SEO-friendly yang memuat kata kunci target, pertanyaan yang dijawab video, dan hook emosional yang kuat].",
   "chapters": "0:00 Intro\n[timestamp] Judul Babak 1\n[timestamp] Judul Babak 2\n[timestamp] Judul Babak 3\n[timestamp] Judul Babak 4\n[timestamp] Outro"
