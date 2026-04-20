@@ -237,8 +237,11 @@ def _call_qwen(prompt: str) -> str:
                         },
                         {"role": "user", "content": prompt},
                     ],
-                    "temperature": 0.1,
-                    "max_tokens": SCORER_MAX_TOKENS,
+                    # Scorer: deterministik (Qwen: no seed/top_k support)
+                    "temperature":       0.15,
+                    "top_p":             0.90,
+                    "frequency_penalty": 0.0,   # repeat_penalty 1.0 = no penalty
+                    "max_tokens":        SCORER_MAX_TOKENS,
                 },
                 timeout=60,
             )
@@ -273,9 +276,14 @@ def _call_ollama(prompt: str) -> str:
         "stream": False,
         "format": "json",
         "options": {
-            "temperature": 0.1,
-            "num_predict": SCORER_MAX_TOKENS,
-            "num_ctx": 4096,
+            # Scorer: deterministik, konsisten, bukan kreatif
+            "temperature":    0.15,
+            "top_p":          0.90,
+            "top_k":          20,
+            "repeat_penalty": 1.0,
+            "num_predict":    SCORER_MAX_TOKENS,
+            "num_ctx":        4096,
+            "seed":           42,   # Fixed seed: skor konsisten antar run
         },
     }
     resp = requests.post(

@@ -511,8 +511,11 @@ def _qwen_generate(prompt: str) -> str:
                 json={
                     "model": model_name,
                     "messages": [{"role": "user", "content": prompt}],
-                    "temperature": 0.7,
-                    "max_tokens": 200,
+                    # Thumbnail generator: creative but controlled (Qwen: no top_k/seed)
+                    "temperature":       0.75,
+                    "top_p":             0.95,
+                    "frequency_penalty": 0.25,  # ~repeat_penalty 1.1 di Ollama
+                    "max_tokens":        200,
                 },
                 timeout=GEN_TIMEOUT,
             )
@@ -534,7 +537,16 @@ def _ollama_generate(prompt: str) -> str:
         "model": OLLAMA_MODEL,
         "messages": [{"role": "user", "content": prompt}],
         "stream": False,
-        "options": {"temperature": 0.7, "num_predict": 200, "num_ctx": 2048},
+        "options": {
+            # Thumbnail generator: creative but controlled
+            "temperature":    0.75,
+            "top_p":          0.95,
+            "top_k":          45,
+            "repeat_penalty": 1.10,
+            "num_predict":    200,
+            "num_ctx":        2048,
+            "seed":           -1,
+        },
     }
     resp = requests.post(
         f"{OLLAMA_BASE_URL}/api/chat",

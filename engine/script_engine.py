@@ -349,9 +349,14 @@ def _call_ollama(system_prompt: str, user_message: str, profile: str) -> dict:
             "stream":  False,
             "format":  "json",
             "options": {
-                "temperature": max(0.3, 0.75 - (attempt - 1) * 0.2),  # makin rendah tiap retry
-                "num_predict": max_tokens,
-                "num_ctx": 8192  # Mencegah context limit terpotong untuk 1300 kata
+                # Generator: high creativity, anti-repetition
+                "temperature":    max(0.5, 0.90 - (attempt - 1) * 0.10),  # 0.90 -> 0.80 -> 0.70
+                "top_p":          0.95,
+                "top_k":          50,
+                "repeat_penalty": 1.15,
+                "num_predict":    max_tokens,
+                "num_ctx":        16384,
+                "seed":           -1,   # -1 = random, variasi antar video
             },
         }
 
@@ -422,8 +427,11 @@ def _call_qwen(system_prompt: str, user_message: str, profile: str) -> dict:
                             {"role": "system", "content": system_with_json},
                             {"role": "user", "content": user_msg},
                         ],
-                        "temperature": max(0.3, 0.75 - (attempt - 1) * 0.2),
-                        "max_tokens": max_tokens,
+                        # Generator: high creativity (Qwen: no top_k/seed support)
+                        "temperature":       max(0.5, 0.90 - (attempt - 1) * 0.10),
+                        "top_p":             0.95,
+                        "frequency_penalty": 0.35,  # ~repeat_penalty 1.15 di Ollama
+                        "max_tokens":        max_tokens,
                     },
                     timeout=300,
                 )
