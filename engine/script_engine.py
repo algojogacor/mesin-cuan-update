@@ -1,9 +1,12 @@
 """
 script_engine.py - Generate script narasi video dari topik
-Primary  : DeepSeek V3.1 671B via Ollama (lokal/cloud, gratis, kualitas tinggi)
-Fallback1: Groq — Llama 3.3 70B (gratis, cepat)
-Fallback2: Gemini 1.5 Flash (gratis, quota harian)
-Fallback3: Anthropic Claude Haiku (berbayar, last resort)
+
+Primary  : Dual Parallel Generation (Qwen + Ollama) dengan Cross-Provider Scoring
+           Generator A: Qwen   → Scored by: Ollama
+           Generator B: Ollama → Scored by: Qwen
+           Winner (score tertinggi) yang lanjut ke TTS.
+Fallback : Sequential waterfall jika parallel gagal/score < threshold
+           Groq → Gemini → Anthropic (Groq TIDAK pernah jadi primary)
 Support  : profile "shorts" dan "long_form" (Target 1300+ kata)
 
 Pengaman JSON & Karakter:
@@ -19,6 +22,7 @@ import os
 import re
 import time
 import random
+import concurrent.futures
 from copy import deepcopy
 import requests
 from engine.utils import get_logger, require_env, load_prompt, timestamp, save_json, channel_data_path
@@ -26,6 +30,7 @@ from engine.utils import get_logger, require_env, load_prompt, timestamp, save_j
 # ── BARU: Imports untuk fitur Hook & Retention ─────────────────────────────────
 from engine.hook_engine import inject_hook
 from engine.retention_engine import build_prompt_addon
+from engine.memory_engine import build_script_memory_addon
 
 logger = get_logger("script_engine")
 
@@ -55,6 +60,14 @@ SHORTS_REVIEW_MAX_PASSES = 2
 SCRIPT_MAX_TOKENS_SHORTS = int(os.environ.get("SCRIPT_MAX_TOKENS_SHORTS", "2400"))
 SCRIPT_MAX_TOKENS_LONGFORM = int(os.environ.get("SCRIPT_MAX_TOKENS_LONGFORM", "7000"))
 SCRIPT_REVIEW_MAX_TOKENS = int(os.environ.get("SCRIPT_REVIEW_MAX_TOKENS", "3200"))
+
+# ── Script Quality Scorer (parallel gate) ────────────────────────────────────
+# Threshold: jika max(score_A, score_B) >= ini → langsung lanjut
+# Jika di bawah threshold → fallback ke sequential waterfall
+SCRIPT_QUALITY_THRESHOLD = float(os.environ.get("SCRIPT_QUALITY_THRESHOLD", "7.8"))
+
+# Timeout untuk parallel generation (detik)
+PARALLEL_TIMEOUT = 600
 
 
 def _post_json_no_proxy(url: str, headers: dict | None = None, payload: dict | None = None,
@@ -97,6 +110,12 @@ def generate(topic_data: dict, channel: dict, profile: str = "shorts") -> dict:
         system_prompt += retention_addon
         logger.info(f"[{ch_id}] Retention insights disertakan ke prompt")
 
+    if niche == "horror_facts":
+        memory_addon = build_script_memory_addon(channel, topic_data, profile=profile)
+        if memory_addon:
+            system_prompt += memory_addon
+            logger.info(f"[{ch_id}] Creative memory horror disertakan ke prompt")
+
     # ── VIRAL ITERATION: Modifikasi user_message agar AI tahu ini Part 2 ────
     if is_viral_iteration:
         if language == "id":
@@ -123,14 +142,24 @@ def generate(topic_data: dict, channel: dict, profile: str = "shorts") -> dict:
     else:
         user_message = f"Topik: {topic}" if language == "id" else f"Topic: {topic}"
 
-    result                       = _call_ai(system_prompt, user_message, profile=profile)
+    # ── Dual Parallel Generation + Cross-Provider Scoring ──────────────────
+    result = _generate_and_pick_best(system_prompt, user_message, profile, ch_id)
+    if result is None:
+        # Fallback: sequential waterfall (existing behavior, tidak ada perubahan)
+        logger.info(f"[{ch_id}] Parallel scorer tidak menghasilkan winner → fallback ke sequential")
+        result = _call_ai(system_prompt, user_message, profile=profile)
     result["topic"]              = topic
     result["profile"]            = profile  # Penting untuk hook_engine agar tahu target field
     result["is_viral_iteration"] = is_viral_iteration  # Forward metadata ke output JSON
+    result["topic_source"]       = topic_data.get("topic_source", "unknown")
 
     # ── BARU: Inject hook di awal narasi ────────────────────────────────────
     result = inject_hook(result, channel)
     logger.info(f"[{ch_id}] Hook disuntikkan ke narasi")
+
+    if profile == "shorts" and result.get("hook_meta", {}).get("rewritten"):
+        result["script"] = _compose_shorts_script(result)
+        logger.info(f"[{ch_id}] Hook horror direwrite dan script dirakit ulang")
 
     if profile == "shorts":
         result = review_and_iterate(result, channel, profile=profile)
@@ -141,6 +170,23 @@ def generate(topic_data: dict, channel: dict, profile: str = "shorts") -> dict:
     logger.info(f"[{ch_id}] Script saved: {out_path}")
 
     return {**result, "script_path": out_path, "profile": profile}
+
+
+def review_hook_only(script_data: dict, channel: dict, profile: str = "shorts") -> dict:
+    """
+    Apply only the horror hook review/upgrade pass without running the full
+    script review loop, TTS, footage, or render steps.
+    """
+    current = deepcopy(script_data)
+    current["profile"] = current.get("profile", profile)
+
+    if current.get("profile") == "shorts":
+        current = _normalize_shorts_schema(current)
+
+    current = inject_hook(current, channel)
+    if current.get("profile") == "shorts" and current.get("hook_meta", {}).get("rewritten"):
+        current["script"] = _compose_shorts_script(current)
+    return current
 
 
 def _call_ai(system_prompt: str, user_message: str, profile: str = "shorts") -> dict:
@@ -172,11 +218,111 @@ def _call_ai(system_prompt: str, user_message: str, profile: str = "shorts") -> 
     raise RuntimeError(f"Semua provider gagal. Error terakhir: {last_error}")
 
 
+# ─── Dual Parallel Generation + Cross-Provider Scoring ───────────────────────
+
+def _generate_and_pick_best(
+    system_prompt: str,
+    user_message: str,
+    profile: str,
+    ch_id: str,
+) -> dict | None:
+    """
+    Generate script dengan dua model secara paralel, lalu cross-score hasilnya.
+
+    Strategi anti-sycophancy:
+      Generator Qwen   → di-score oleh Ollama
+      Generator Ollama → di-score oleh Qwen
+
+    Return:
+      dict  — script terbaik (score >= SCRIPT_QUALITY_THRESHOLD)
+      None  — signal agar caller fallback ke _call_ai() sequential
+    """
+    from engine.script_quality_scorer import score_script
+
+    qwen_available = bool(os.getenv("QWEN_API_KEY"))
+    if not qwen_available:
+        logger.info(f"[{ch_id}] QWEN_API_KEY tidak ada — skip parallel, gunakan sequential")
+        return None
+
+    logger.info(f"[{ch_id}] ⚡ Parallel generation: Qwen + Ollama ...")
+
+    # ── Step 1: Generate paralel ─────────────────────────────────────────────
+    generator_results: dict[str, dict | Exception] = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        futures = {
+            "qwen":   executor.submit(_call_qwen,  system_prompt, user_message, profile),
+            "ollama": executor.submit(_call_ollama, system_prompt, user_message, profile),
+        }
+        for generator, future in futures.items():
+            try:
+                generator_results[generator] = future.result(timeout=PARALLEL_TIMEOUT)
+                logger.info(f"[{ch_id}] [parallel] ✅ {generator} selesai generate")
+            except concurrent.futures.TimeoutError:
+                logger.warning(f"[{ch_id}] [parallel] ⚠️  {generator} timeout")
+            except Exception as exc:
+                logger.warning(f"[{ch_id}] [parallel] ❌ {generator} gagal: {exc}")
+
+    successful = {k: v for k, v in generator_results.items() if isinstance(v, dict)}
+    if not successful:
+        logger.warning(f"[{ch_id}] Kedua generator gagal — fallback ke sequential")
+        return None
+
+    # ── Step 2: Cross-score (anti-sycophancy) ────────────────────────────────
+    # Qwen output  → dinilai Ollama
+    # Ollama output → dinilai Qwen
+    CROSS_SCORER = {"qwen": "ollama", "ollama": "qwen"}
+
+    scored: list[tuple[float, str, dict, dict]] = []
+    for generator, script_data in successful.items():
+        scorer_provider = CROSS_SCORER[generator]
+        try:
+            quality = score_script(
+                script_data,
+                profile=profile,
+                scorer_provider=scorer_provider,
+            )
+            overall = quality.get("overall", 0.0)
+            scored.append((overall, generator, script_data, quality))
+            logger.info(
+                f"[{ch_id}] [scorer] {generator} → dinilai {scorer_provider}: "
+                f"{overall:.1f} ({quality.get('verdict', '?')}) | "
+                f"hook={quality.get('hook_strength')} curiosity={quality.get('curiosity_gap')}"
+            )
+        except Exception as exc:
+            logger.warning(
+                f"[{ch_id}] [scorer] Scoring {generator} gagal: {exc} — skor fallback 5.0"
+            )
+            scored.append((5.0, generator, script_data, {"overall": 5.0, "verdict": "SCORE_FAILED"}))
+
+    if not scored:
+        logger.warning(f"[{ch_id}] Semua scoring gagal — fallback ke sequential")
+        return None
+
+    # ── Step 3: Pilih winner ─────────────────────────────────────────────────
+    scored.sort(key=lambda x: x[0], reverse=True)
+    best_score, best_generator, best_script, best_quality = scored[0]
+
+    # Attach quality metadata untuk debug/audit (tersimpan di script JSON)
+    best_script["quality_score"] = best_quality
+
+    if best_score >= SCRIPT_QUALITY_THRESHOLD:
+        logger.info(
+            f"[{ch_id}] ✅ Parallel winner: {best_generator} "
+            f"(score={best_score:.1f} >= threshold={SCRIPT_QUALITY_THRESHOLD})"
+        )
+        return best_script
+
+    logger.info(
+        f"[{ch_id}] ⚠️  Best parallel score {best_score:.1f} < threshold {SCRIPT_QUALITY_THRESHOLD} "
+        f"— fallback ke sequential waterfall"
+    )
+    return None
+
+
 # ─── DeepSeek via Ollama ──────────────────────────────────────────────────────
 
 def _call_ollama(system_prompt: str, user_message: str, profile: str) -> dict:
     max_tokens = SCRIPT_MAX_TOKENS_LONGFORM if profile == "long_form" else SCRIPT_MAX_TOKENS_SHORTS
-
     system_with_json = (
         system_prompt +
         "\n\nCRITICAL: Respond with ONLY a raw JSON object. "
@@ -607,6 +753,7 @@ def _get_length_hint(profile: str) -> str:
             "- If you include 'body_beats', make it an array of 2-4 short beat objects or strings.\n"
             "- Include 'visual_beats' with keys opening, middle, ending when possible.\n"
             "- Include 'cta_plan' with start='none', middle='visual_only', end='strong_verbal'.\n"
+            "- Include 'creative_direction' with thumbnail_text, thumbnail_style, opening_visual_priority, packaging_angle when possible.\n"
             "- Total spoken narration still MUST exceed 80 words once assembled."
         )
     else:
@@ -657,6 +804,12 @@ def _normalize_shorts_schema(data: dict) -> dict:
     if not data.get("cta_visual_text"):
         data["cta_visual_text"] = _build_cta_visual_text(data)
 
+    if not isinstance(data.get("hook_score"), (int, float)):
+        data["hook_score"] = _infer_hook_score(data)
+
+    if not data.get("hook_reason"):
+        data["hook_reason"] = _infer_hook_reason(data)
+
     if not data.get("music_mood"):
         data["music_mood"] = "dark intro"
 
@@ -669,6 +822,7 @@ def _normalize_shorts_schema(data: dict) -> dict:
     if not data.get("keywords"):
         data["keywords"] = data.get("tags", [])[:5]
 
+    _normalize_creative_direction(data)
     _normalize_cta_language(data)
 
     return data
@@ -730,10 +884,138 @@ def _extract_last_sentence(text: str) -> str:
 
 
 def _build_cta_visual_text(data: dict) -> str:
-    title = (data.get("title", "") or "").strip()
-    if title:
-        return "SUBSCRIBE UNTUK FAKTA YANG LEBIH GELAP"
-    return "SUBSCRIBE UNTUK BAGIAN BERIKUTNYA"
+    hook_type = (data.get("hook_type") or "").strip().lower()
+    title = " ".join(str(data.get("title", "")).upper().split())
+    final_reveal = " ".join(str(data.get("final_reveal", "")).upper().split())
+
+    if hook_type == "forbidden_record":
+        return "SIMPAN SEBELUM HILANG"
+    if hook_type == "conspiracy_reveal":
+        return "RAHASIANYA BESOK"
+    if hook_type == "body_horror":
+        return "KALAU BERANI LANJUT"
+    if hook_type == "historical_shock":
+        return "BAGIAN GELAPNYA BESOK"
+    if hook_type == "stat_attack":
+        return "FAKTANYA MAKIN GILA"
+
+    keyword_map = [
+        ("GEREJA", "ARSIPNYA BESOK"),
+        ("RITUAL", "JANGAN TONTON SENDIRI"),
+        ("KASET", "PUTAR BESOK MALAM"),
+        ("RUMAH SAKIT", "SIMPAN DULU"),
+        ("SETAN", "KALAU BERANI LANJUT"),
+    ]
+    combined = f"{title} {final_reveal}"
+    for needle, cta in keyword_map:
+        if needle in combined:
+            return cta
+    return "KALAU BERANI LANJUT"
+
+
+def _infer_hook_score(data: dict) -> float:
+    hook_meta = data.get("hook_meta", {})
+    if isinstance(hook_meta, dict) and isinstance(hook_meta.get("score"), (int, float)):
+        return float(hook_meta["score"])
+
+    opening = str(data.get("hook_line") or data.get("hook") or "").strip()
+    words = len(opening.split())
+    score = 7.0
+    if 6 <= words <= 18:
+        score += 0.7
+    if any(token in opening.lower() for token in ("gereja", "rahasia", "ritual", "arsip", "kaset", "setan", "vatican", "forbidden", "secret")):
+        score += 0.6
+    return round(min(score, 9.3), 1)
+
+
+def _infer_hook_reason(data: dict) -> str:
+    hook_meta = data.get("hook_meta", {})
+    if isinstance(hook_meta, dict) and hook_meta.get("reason"):
+        return str(hook_meta.get("reason")).strip()
+
+    hook_type = (data.get("hook_type") or "").strip().lower()
+    reasons = {
+        "forbidden_record": "Hook langsung menjual file terlarang atau bukti tersembunyi sejak detik pertama.",
+        "conspiracy_reveal": "Hook langsung membuka rasa cover-up dan membuat penonton ingin tahu apa yang disembunyikan.",
+        "historical_shock": "Hook menggabungkan konteks lama dengan ancaman yang terasa masih hidup.",
+        "body_horror": "Hook memicu rasa jijik dan takut dengan anomali fisik yang sulit dilupakan.",
+        "stat_attack": "Hook terasa dingin dan cepat karena menyerang dengan fakta atau klaim yang keras.",
+    }
+    return reasons.get(hook_type, "Hook membuka dengan ancaman atau misteri yang cukup tajam untuk menahan swipe.")
+
+
+def _normalize_creative_direction(data: dict) -> None:
+    creative = data.get("creative_direction")
+    if not isinstance(creative, dict):
+        creative = {}
+
+    if not creative.get("thumbnail_text"):
+        creative["thumbnail_text"] = _build_thumbnail_text(data)
+
+    if not creative.get("thumbnail_style"):
+        hook_type = (data.get("hook_type") or "").strip().lower()
+        style_map = {
+            "forbidden_record": "forbidden evidence",
+            "conspiracy_reveal": "archival conspiracy",
+            "historical_shock": "historical dread",
+            "body_horror": "body horror shock",
+            "stat_attack": "cold evidence shock",
+        }
+        creative["thumbnail_style"] = style_map.get(hook_type, "dark evidence shock")
+
+    if not creative.get("opening_visual_priority"):
+        opening = data.get("visual_beats", {}).get("opening", []) if isinstance(data.get("visual_beats"), dict) else []
+        if isinstance(opening, list) and opening:
+            creative["opening_visual_priority"] = str(opening[0]).strip()
+        else:
+            creative["opening_visual_priority"] = str(data.get("hook_line", "")).strip()[:80]
+
+    if not creative.get("packaging_angle"):
+        creative["packaging_angle"] = _build_packaging_angle(data)
+
+    data["creative_direction"] = creative
+
+
+def _build_thumbnail_text(data: dict) -> str:
+    text = " ".join(
+        str(item) for item in [
+            data.get("hook_type", ""),
+            data.get("title", ""),
+            data.get("hook_line", ""),
+            data.get("final_reveal", ""),
+        ] if item
+    ).upper()
+    mappings = [
+        ("FORBIDDEN", "TERLARANG"),
+        ("SECRET", "RAHASIA"),
+        ("RECORD", "ARSIP"),
+        ("FILE", "BERKAS"),
+        ("EXORC", "EXORCISM"),
+        ("CHURCH", "GEREJA"),
+        ("RITUAL", "RITUAL"),
+        ("VATICAN", "VATICAN"),
+        ("CURSE", "KUTUKAN"),
+        ("VOICE", "SUARA"),
+        ("TAPE", "KASET"),
+        ("HOSPITAL", "RUMAH SAKIT"),
+        ("DEMON", "SETAN"),
+    ]
+    for needle, replacement in mappings:
+        if needle in text:
+            return replacement
+    return "MENCEKAM"
+
+
+def _build_packaging_angle(data: dict) -> str:
+    hook_type = (data.get("hook_type") or "").strip().lower()
+    angle_map = {
+        "forbidden_record": "forbidden file",
+        "conspiracy_reveal": "hidden cover-up",
+        "historical_shock": "dark historical proof",
+        "body_horror": "disturbing physical anomaly",
+        "stat_attack": "cold shocking proof",
+    }
+    return angle_map.get(hook_type, "dark hidden evidence")
 
 
 def _normalize_cta_language(data: dict) -> None:
@@ -915,6 +1197,9 @@ Editorial stance:
 - Avoid generic filler and avoid anti-climactic explanations.
 - Ending visual beats must not contain UI instructions like subscribe button overlays.
 - Prefer music moods 'dark intro' or 'horror tension' for aggressive horror openings.
+- Make thumbnail_text sharp, short, and dark. Avoid lazy generic words if a more specific hook-word exists.
+- Pattern interrupt must actually bend the story away from the viewer's expected direction, not just add another shocking fact.
+- hook_score and hook_reason should match the real strength of the opening.
 
 Language: {language}
 Niche: {niche}
@@ -931,6 +1216,8 @@ Return JSON only:
     "title": "...",
     "hook_type": "...",
     "hook_line": "...",
+    "hook_score": 8,
+    "hook_reason": "...",
     "anchor_line": "...",
     "body_beats": [{{"purpose":"...","text":"..."}}],
     "final_reveal": "...",
@@ -942,6 +1229,12 @@ Return JSON only:
     "music_direction": "...",
     "music_keywords": ["..."],
     "music_arc": ["..."],
+    "creative_direction": {{
+      "thumbnail_text": "...",
+      "thumbnail_style": "...",
+      "opening_visual_priority": "...",
+      "packaging_angle": "..."
+    }},
     "keywords": ["..."],
     "tags": ["..."],
     "description": "...",

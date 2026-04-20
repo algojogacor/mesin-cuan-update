@@ -16,6 +16,14 @@ import textwrap
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageEnhance
 from engine.utils import get_logger, timestamp, channel_data_path
+from engine.memory_engine import build_packaging_memory
+
+# ── Thumbnail Intelligence (style library + anti-repetisi) ────────────────────
+try:
+    from engine.thumbnail_intelligence import pick_and_generate_text as _pick_style_text
+    _THUMB_INTEL_AVAILABLE = True
+except ImportError:
+    _THUMB_INTEL_AVAILABLE = False
 
 try:
     import cv2
@@ -256,22 +264,26 @@ def generate(script_data: dict, video_path: str, channel: dict, profile: str = "
     lang     = channel.get("language", "id")
     niche    = channel.get("niche", "default")
     title    = script_data.get("title", "")
+    packaging_memory = build_packaging_memory(channel) if channel.get("niche") == "horror_facts" else {}
     out_dir  = channel_data_path(ch_id, "output")
     ts       = timestamp()
-    
+
     logger.info(f"[{ch_id}] [{profile}] Generating Ultimate 2026 CTR Thumbnail Variants...")
     base_out_path = f"{out_dir}/{ts}_{profile}_thumb"
 
     is_sh = (profile != "long_form")
-    
+
     # Menghasilkan 3 varian otomatis
     for v in [1, 2, 3]:
         path = f"{base_out_path}_v{v}.png"
-        _build_layout(title, video_path, path, niche, lang, variant=v, is_shorts=is_sh)
+        _build_layout(title, video_path, path, niche, lang, variant=v, is_shorts=is_sh,
+                      script_data=script_data, packaging_memory=packaging_memory, channel=channel)
 
     return f"{base_out_path}_v1.png"
 
-def _build_layout(title: str, video_path: str, out_path: str, niche: str, lang: str, variant: int, is_shorts: bool):
+def _build_layout(title: str, video_path: str, out_path: str, niche: str, lang: str, variant: int, is_shorts: bool,
+                  script_data: dict | None = None, packaging_memory: dict | None = None,
+                  channel: dict | None = None):
     W, H   = (1080, 1920) if is_shorts else (1280, 720)
     colors = VARIANT_COLORS[variant]
 
@@ -314,7 +326,7 @@ def _build_layout(title: str, video_path: str, out_path: str, niche: str, lang: 
     bg = _inject_niche_emojis(bg, niche, W, H, is_shorts)
 
     # 7. Dynamic Text (UPGRADED: Multi-line & Tilted)
-    punchy_text = _get_contextual_text(title, niche, lang)
+    punchy_text = _resolve_thumbnail_text(title, niche, lang, script_data or {}, packaging_memory or {}, channel=channel)
     base_sz     = 240 if is_shorts else 190
     
     # Text Auto-Wrap Process
@@ -327,6 +339,42 @@ def _build_layout(title: str, video_path: str, out_path: str, niche: str, lang: 
         bg = _draw_premium_text(bg, wrapped_text, font, W, (H-final_sz)//2, colors["ctr_text"], align="left", x_offset=70, tilt_angle=5)
 
     bg.convert("RGB").save(out_path, "PNG", optimize=True)
+
+
+def _resolve_thumbnail_text(title: str, niche: str, language: str,
+                            script_data: dict, packaging_memory: dict,
+                            channel: dict | None = None) -> str:
+    """
+    Prioritas penentuan teks thumbnail:
+    1. script creative_direction.thumbnail_text (dari LLM saat generate script)
+    2. thumbnail_intelligence style library (anti-repetisi, pattern-driven)
+    3. _get_contextual_text() — random impact word (existing fallback)
+    """
+    # Tier 1: creative_direction dari script
+    creative = script_data.get("creative_direction", {})
+    if isinstance(creative, dict):
+        thumbnail_text = str(creative.get("thumbnail_text", "")).strip()
+        if thumbnail_text and not _is_repetitive_thumbnail_text(thumbnail_text, packaging_memory):
+            return thumbnail_text
+
+    # Tier 2: thumbnail_intelligence style library
+    if _THUMB_INTEL_AVAILABLE and channel:
+        try:
+            intel_text = _pick_style_text(channel, title, script_data)
+            if intel_text:
+                return intel_text
+        except Exception as exc:
+            logger.debug(f"thumbnail_intelligence fallback: {exc}")
+
+    # Tier 3: random impact word (existing behavior)
+    return _get_contextual_text(title, niche, language)
+
+
+def _is_repetitive_thumbnail_text(text: str, packaging_memory: dict) -> bool:
+    recent = [str(item).strip().lower() for item in packaging_memory.get("recent_thumbnail_texts", []) if str(item).strip()]
+    target = text.strip().lower()
+    older = recent[1:6] if recent else []
+    return target in older
 
 # ─── Helpers (Circle, Zoom, Frame) ────────────────────────────────────────────
 
