@@ -549,29 +549,54 @@ def _music_ai_provider_order() -> list[str]:
 
 def _call_music_ai_provider(provider: str, prompt: str) -> str:
     if provider == "qwen":
-        session = _download_session()
-        try:
-            resp = session.post(
-                f"{QWEN_API_BASE.rstrip('/')}/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {os.getenv('QWEN_API_KEY', '')}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": QWEN_MODEL,
-                    "messages": [
-                        {"role": "system", "content": "You are a music supervisor for short-form video. Output JSON only."},
-                        {"role": "user", "content": prompt},
-                    ],
-                    "temperature": 0.1,
-                    "max_tokens": 400,
-                },
-                timeout=45,
-            )
-            resp.raise_for_status()
-            return resp.json()["choices"][0]["message"]["content"]
-        finally:
-            session.close()
+        api_key = os.getenv("QWEN_API_KEY", "")
+        if not api_key:
+            raise RuntimeError("QWEN_API_KEY tidak tersedia")
+        qwen_models = [QWEN_MODEL] + [
+            m for m in os.environ.get(
+                "QWEN_MODEL_CANDIDATES",
+                "qwen3-235b-a22b,qwen3-30b-a3b,qwen3-turbo"
+            ).split(",")
+            if m.strip() and m.strip() != QWEN_MODEL
+        ]
+        last_err = None
+        for model_name in qwen_models:
+            session = _download_session()
+            try:
+                resp = session.post(
+                    f"{QWEN_API_BASE.rstrip('/')}/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": model_name,
+                        "messages": [
+                            {"role": "system", "content": "You are a music supervisor for short-form video. Output JSON only."},
+                            {"role": "user", "content": prompt},
+                        ],
+                        # Selector: deterministik (Qwen: no seed/top_k)
+                        "temperature":       0.20,
+                        "top_p":             0.90,
+                        "frequency_penalty": 0.0,
+                        "max_tokens":        200,
+                    },
+                    timeout=45,
+                )
+                resp.raise_for_status()
+                return resp.json()["choices"][0]["message"]["content"]
+            except requests.HTTPError as exc:
+                status = exc.response.status_code if exc.response is not None else None
+                last_err = exc
+                if status in (400, 404):
+                    continue  # Coba model berikutnya
+                raise
+            except Exception as exc:
+                last_err = exc
+                raise
+            finally:
+                session.close()
+        raise RuntimeError(f"Music Qwen gagal semua model: {last_err}")
 
     resp = requests.post(
         f"{OLLAMA_BASE_URL}/api/chat",
@@ -583,7 +608,16 @@ def _call_music_ai_provider(provider: str, prompt: str) -> str:
             ],
             "stream": False,
             "format": "json",
-            "options": {"temperature": 0.1, "num_predict": 400, "num_ctx": 4096},
+            "options": {
+                # Selector: deterministik
+                "temperature":    0.20,
+                "top_p":          0.90,
+                "top_k":          20,
+                "repeat_penalty": 1.0,
+                "num_predict":    200,
+                "num_ctx":        4096,
+                "seed":           42,
+            },
         },
         timeout=45,
     )
