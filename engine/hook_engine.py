@@ -402,7 +402,7 @@ def _call_hook_provider(provider: str, prompt: str) -> str:
                             {"role": "user", "content": prompt},
                         ],
                         "temperature": 0.25,
-                        "max_tokens": 500,
+                        "max_tokens": 1200,   # 500 terlalu kecil — JSON terpotong di char 857/1426
                     },
                     timeout=45,
                 )

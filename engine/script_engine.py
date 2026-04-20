@@ -1186,6 +1186,27 @@ def _call_review_provider(provider: str, prompt: str) -> str:
     raise ValueError(f"Provider review tidak dikenal: {provider}")
 
 
+def _trim_script_for_review(script_data: dict) -> dict:
+    """
+    Kirim hanya field yang relevan untuk reviewer.
+    Ini mengurangi ukuran prompt secara signifikan dan mencegah 400 dari Qwen.
+    Reviewer tidak perlu tahu: quality_score, visual_beats, keywords, tags, description, dll.
+    """
+    return {
+        "title":        script_data.get("title", ""),
+        "hook_type":    script_data.get("hook_type", ""),
+        "hook_line":    script_data.get("hook_line", ""),
+        "anchor_line":  script_data.get("anchor_line", ""),
+        "body_beats":   script_data.get("body_beats", []),
+        "final_reveal": script_data.get("final_reveal", ""),
+        "cta_line":     script_data.get("cta_line", ""),
+        "script":       script_data.get("script", ""),
+        "music_mood":   script_data.get("music_mood", ""),
+        "hook_score":   script_data.get("hook_score", ""),
+        "hook_reason":  script_data.get("hook_reason", ""),
+    }
+
+
 def _build_review_prompt(script_data: dict, channel: dict, threshold: float, mode: str) -> str:
     language = "Bahasa Indonesia" if channel.get("language") == "id" else "English"
     niche = channel.get("niche", "horror_facts")
@@ -1194,6 +1215,9 @@ def _build_review_prompt(script_data: dict, channel: dict, threshold: float, mod
         if mode == "rewrite_if_below"
         else "Score only. Do NOT rewrite the script. Set updated_script to null."
     )
+
+    # Trim script sebelum dikirim — hanya field yang relevan untuk evaluasi
+    trimmed = _trim_script_for_review(script_data)
 
     return f"""You are a retention-first YouTube Shorts editor.
 Evaluate this script for retention, not factual accuracy.
@@ -1252,7 +1276,7 @@ Return JSON only:
 }}
 
 SCRIPT JSON:
-{json.dumps(script_data, ensure_ascii=False, indent=2)}
+{json.dumps(trimmed, ensure_ascii=False, indent=2)}
 """
 
 
