@@ -25,6 +25,7 @@ import json
 import subprocess
 import shutil
 import random
+import math
 from engine.utils import get_logger, load_settings, timestamp, channel_data_path
 
 logger = get_logger("video_engine")
@@ -61,7 +62,9 @@ USE_GPU = True              # False = paksa CPU (untuk debug atau saat VRAM penu
 WHISPER_MODEL_SIZE   = "small"  # "tiny"(cepat,kurang akurat) | "small"(optimal) | "medium"(berat)
 WHISPER_DEVICE       = "cpu"    # Tetap CPU — simpan VRAM 4GB untuk NVENC
 WHISPER_COMPUTE_TYPE = "int8"   # int8 = RAM ~244MB vs float16 ~488MB, akurasi mirip
-WHISPER_MIN_SEG_DUR  = 1.5      # Segmen < 1.5 detik digabung (kurangi jumlah FFmpeg calls)
+WHISPER_MIN_SEG_DUR  = 1.5      # Default merge threshold
+WHISPER_MIN_SEG_DUR_SHORTS = 0.85
+WHISPER_MIN_SEG_DUR_LONGFORM = 1.5
 
 # ── Hardware: FFmpeg General ──────────────────────────────────────────────────
 FFMPEG_THREAD_COUNT  = 8        # i7-13H punya 12 thread, sisakan 4 untuk sistem
@@ -138,13 +141,27 @@ TITLE_FONT_SIZE_SHORTS    = 55      # px — judul di Shorts
 TITLE_FONT_SIZE_LONGFORM  = 54      # px — judul di Long Form
 TITLE_Y_POS_SHORTS        = 180     # px dari atas — posisi judul di Shorts
 TITLE_Y_POS_LONGFORM      = 80      # px dari atas — posisi judul di Long Form
-TITLE_SHOW_UNTIL_SEC      = 5.0     # Judul tampil sampai detik ke-N
+TITLE_SHOW_UNTIL_SEC      = 5.0     # Default judul tampil sampai detik ke-N
+TITLE_SHOW_UNTIL_SEC_SHORTS = 2.2
+TITLE_SHOW_UNTIL_SEC_LONGFORM = 5.0
 TITLE_FADEIN_DUR_SEC      = 0.4     # Durasi fade-in judul
 TITLE_FADEOUT_DUR_SEC     = 0.5     # Durasi fade-out judul
 TITLE_BOX_OPACITY         = 0.65    # Opacity background box di belakang judul
 TITLE_BOX_PADDING         = 18      # Padding box (px)
 TITLE_SHADOW_OPACITY      = 0.85    # Opacity drop shadow judul
 TITLE_MAX_CHARS           = 40      # Potong judul jika lebih dari N karakter
+
+# CTA overlays for Shorts
+MID_CTA_ENABLE_DEFAULT      = True
+MID_CTA_START_RATIO         = 0.55
+MID_CTA_DURATION_SEC        = 1.1
+MID_CTA_FONT_SIZE_SHORTS    = 34
+MID_CTA_BOX_OPACITY         = 0.28
+MID_CTA_Y_POS_RATIO         = 0.11
+END_CTA_FONT_SIZE_SHORTS    = 54
+END_CTA_DURATION_SEC        = 3.6
+END_CTA_BOX_OPACITY         = 0.68
+END_CTA_Y_POS_RATIO         = 0.79
 
 # ── Progress Bar (Finishing) ──────────────────────────────────────────────────
 PROGRESS_BAR_H_SHORTS    = 16       # Tinggi progress bar Shorts (px)
@@ -264,6 +281,21 @@ def _resolve_font_path() -> str:
 def _ffmpeg_font_path(font_path: str) -> str:
     """Convert path ke format FFmpeg drawtext (escape Windows drive letter)."""
     return font_path.replace("\\", "/").replace(":", "\\:")
+
+
+def _safe_drawtext_text(text: str) -> str:
+    """Sanitize text for FFmpeg drawtext."""
+    clean = (text or "").upper().replace("'", "").replace(":", "")
+    clean = clean.replace('"', "").replace("%", " PERSEN")
+    return " ".join(clean.split())
+
+
+def _resolve_music_mood(script_data: dict, niche: str, profile: str) -> str:
+    if profile == "shorts":
+        if script_data.get("music_mood"):
+            return script_data["music_mood"]
+        return "dark intro" if niche in ("horror_facts", "drama") else "uplifting"
+    return script_data.get("keywords_music_intro", "dark ambient")
 
 
 def _run_ffmpeg(cmd: list, label: str):
@@ -386,7 +418,7 @@ def _render_shorts(script_data: dict, audio_path: str, footage_paths: list,
     audio_dur = _get_duration(audio_path)
 
     # Step 1: Transcribe audio → word-level timestamps
-    sentences = _transcribe_audio(audio_path)
+    sentences = _transcribe_audio(audio_path, min_seg_dur=WHISPER_MIN_SEG_DUR_SHORTS)
 
     # Step 2: Build footage synced ke kalimat + Ken Burns
     synced_footage_path = _build_synced_footage(
@@ -403,8 +435,24 @@ def _render_shorts(script_data: dict, audio_path: str, footage_paths: list,
     _sync_video_to_audio(graded_footage_path, audio_path, video_synced_path)
 
     # Step 5: Mix audio — narasi + musik background dengan ducking
-    music_mood        = "dark ambient" if niche in ("horror_facts", "drama") else "uplifting"
-    music_path        = music_engine.fetch(music_mood, int(audio_dur) + 3, ch_id)
+    music_mood = _resolve_music_mood(script_data, niche, "shorts")
+    music_plan = music_engine.build_music_plan(
+        music_mood,
+        audio_dur,
+        ch_id,
+        script_data=script_data,
+        profile="shorts",
+    )
+    music_path = _prepare_music_bed(
+        music_plan,
+        tmp_dir,
+        audio_dur,
+        fallback_mood=music_mood,
+        music_engine_module=music_engine,
+        channel_id=ch_id,
+        script_data=script_data,
+        profile="shorts",
+    )
     mixed_audio_path  = f"{tmp_dir}/mixed_audio.mp3"
     _mix_audio_with_ducking(audio_path, music_path, mixed_audio_path, music_vol, audio_dur)
 
@@ -422,8 +470,8 @@ def _render_shorts(script_data: dict, audio_path: str, footage_paths: list,
     _burn_subtitles(video_with_audio_path, subtitle_path, subtitled_path)
 
     # Step 9: Tambah intro splash screen channel
-    splashed_path = f"{base}_splash{ext}"
-    _add_intro_splash(subtitled_path, splashed_path, ch_id, width, height)
+    splashed_path = subtitled_path
+    logger.info("Shorts skip intro splash to preserve the cold open")
 
     # Step 10: Finishing — progress bar + title overlay + letterbox
     finished_path = f"{base}_finish{ext}"
@@ -431,7 +479,8 @@ def _render_shorts(script_data: dict, audio_path: str, footage_paths: list,
         splashed_path, finished_path,
         title=script_data.get("title", ""),
         width=width, height=height,
-        duration=audio_dur, niche=niche
+        duration=audio_dur, niche=niche,
+        profile="shorts", script_data=script_data
     )
 
     # Step 11: Loudnorm final — standarisasi volume ke -14 LUFS (YouTube standard)
@@ -475,9 +524,23 @@ def _render_long_form(script_data: dict, audio_path: str, footage: dict,
     _sync_video_to_audio(graded_footage_path, audio_path, video_synced_path)
 
     # Step 4-6: Mix audio
-    music_path        = music_engine.fetch(
-        script_data.get("keywords_music_intro", "dark ambient"),
-        int(audio_dur) + 5, ch_id
+    music_mood = _resolve_music_mood(script_data, niche, "long_form")
+    music_plan = music_engine.build_music_plan(
+        music_mood,
+        audio_dur,
+        ch_id,
+        script_data=script_data,
+        profile="long_form",
+    )
+    music_path = _prepare_music_bed(
+        music_plan,
+        tmp_dir,
+        audio_dur,
+        fallback_mood=music_mood,
+        music_engine_module=music_engine,
+        channel_id=ch_id,
+        script_data=script_data,
+        profile="long_form",
     )
     mixed_audio_path      = f"{tmp_dir}/mixed_audio.mp3"
     video_with_audio_path = f"{tmp_dir}/with_audio.mp4"
@@ -486,7 +549,7 @@ def _render_long_form(script_data: dict, audio_path: str, footage: dict,
     _replace_video_audio(video_synced_path, sfx_audio_path, video_with_audio_path)
 
     # Step 7-10: Subtitle + Splash + Finishing + Loudnorm
-    sentences      = _transcribe_audio(audio_path)
+    sentences      = _transcribe_audio(audio_path, min_seg_dur=WHISPER_MIN_SEG_DUR_LONGFORM)
     subtitle_path  = _generate_ass_subtitle(sentences, ch_id, width, height, niche)
     base, ext      = os.path.splitext(out_path)
     subtitled_path = f"{base}_sub{ext}"
@@ -499,7 +562,8 @@ def _render_long_form(script_data: dict, audio_path: str, footage: dict,
         splashed_path, finished_path,
         title=script_data.get("title", ""),
         width=width, height=height,
-        duration=audio_dur, niche=niche
+        duration=audio_dur, niche=niche,
+        profile="long_form", script_data=script_data
     )
     _apply_loudnorm(finished_path, out_path)
 
@@ -512,10 +576,10 @@ def _render_long_form(script_data: dict, audio_path: str, footage: dict,
 #  TRANSCRIPTION
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _transcribe_audio(audio_path: str) -> list[dict]:
+def _transcribe_audio(audio_path: str, min_seg_dur: float = WHISPER_MIN_SEG_DUR) -> list[dict]:
     """
     Transkripsi audio dengan Faster-Whisper, return list segmen dengan
-    word-level timestamps. Segmen pendek (<WHISPER_MIN_SEG_DUR) digabung
+    word-level timestamps. Segmen pendek digabung
     ke segmen sebelumnya untuk mengurangi jumlah footage cuts.
 
     Return format:
@@ -543,7 +607,7 @@ def _transcribe_audio(audio_path: str) -> list[dict]:
     for seg in raw_segments:
         if buffer is None:
             buffer = {**seg, "words": list(seg["words"])}
-        elif (seg["end"] - seg["start"]) < WHISPER_MIN_SEG_DUR:
+        elif (seg["end"] - seg["start"]) < min_seg_dur:
             buffer["end"]    = seg["end"]
             buffer["text"]  += " " + seg["text"]
             buffer["words"] += seg["words"]
@@ -553,7 +617,7 @@ def _transcribe_audio(audio_path: str) -> list[dict]:
     if buffer:
         merged.append(buffer)
 
-    logger.info(f"Transkripsi selesai: {len(merged)} segmen")
+    logger.info(f"Transkripsi selesai: {len(merged)} segmen | merge<{min_seg_dur:.2f}s")
     return merged if merged else raw_segments
 
 
@@ -628,7 +692,7 @@ def _build_synced_footage(footage_paths: list, sentences: list, audio_dur: float
     Build footage yang berganti per kalimat (sentence boundary) dengan
     Ken Burns effect (slow zoom + pan) untuk visual yang lebih sinematik.
 
-    Setiap kalimat mendapat clip berbeda (di-shuffle). Durasi clip = durasi kalimat.
+    Setiap kalimat mendapat clip berbeda dengan urutan yang tetap. Durasi clip = durasi kalimat.
     Ken Burns direction berputar dari KEN_BURNS_ZOOM_DIRS agar tidak monoton.
 
     Return: path file footage yang sudah disync
@@ -641,8 +705,7 @@ def _build_synced_footage(footage_paths: list, sentences: list, audio_dur: float
         _concat_with_blurred_bg(footage_paths, out, width, height, fps, tmp_dir, niche)
         return out
 
-    shuffled_clips = footage_paths.copy()
-    random.shuffle(shuffled_clips)
+    ordered_clips = footage_paths.copy()
 
     vignette   = _vignette_filter(niche)
     clip_index = 0
@@ -653,7 +716,7 @@ def _build_synced_footage(footage_paths: list, sentences: list, audio_dur: float
         if seg_duration < KEN_BURNS_MIN_DUR_SEC:
             continue
 
-        clip_path = shuffled_clips[clip_index % len(shuffled_clips)]
+        clip_path = ordered_clips[clip_index % len(ordered_clips)]
         clip_index += 1
         seg_out    = f"{tmp_dir}/seg_{seg_idx}.mp4"
 
@@ -1028,7 +1091,8 @@ def _add_intro_splash(input_path: str, out_path: str,
 
 def _add_finishing_effects(input_path: str, out_path: str, title: str,
                            width: int, height: int,
-                           duration: float, niche: str = "default"):
+                           duration: float, niche: str = "default",
+                           profile: str = "shorts", script_data: dict | None = None):
     """
     Tambah elemen visual finishing:
     1. Cinematic letterbox (horror/drama/history) — black bars atas+bawah
@@ -1037,7 +1101,8 @@ def _add_finishing_effects(input_path: str, out_path: str, title: str,
 
     Semua parameter dari CONFIG BLOCK di atas.
     """
-    is_shorts        = (width == 1080 and height == 1920)
+    script_data      = script_data or {}
+    is_shorts        = (profile == "shorts" and width == 1080 and height == 1920)
     progress_bar_h   = PROGRESS_BAR_H_SHORTS if is_shorts else PROGRESS_BAR_H_LONGFORM
     progress_color   = NICHE_PROGRESS_BAR_COLOR.get(niche, NICHE_PROGRESS_BAR_COLOR["default"])
     title_font_size  = TITLE_FONT_SIZE_SHORTS if is_shorts else TITLE_FONT_SIZE_LONGFORM
@@ -1090,7 +1155,10 @@ def _add_finishing_effects(input_path: str, out_path: str, title: str,
         fp_escaped = _ffmpeg_font_path(font_path)
 
         # Hitung timing fade-out title
-        title_show_until  = min(TITLE_SHOW_UNTIL_SEC, duration - 0.2)
+        title_show_until  = min(
+            TITLE_SHOW_UNTIL_SEC_SHORTS if is_shorts else TITLE_SHOW_UNTIL_SEC_LONGFORM,
+            duration - 0.2
+        )
         title_fadeout_start = title_show_until - TITLE_FADEOUT_DUR_SEC
 
         alpha_expr = (
@@ -1113,10 +1181,56 @@ def _add_finishing_effects(input_path: str, out_path: str, title: str,
             f":box=1:boxcolor=black@{TITLE_BOX_OPACITY}"
             f":boxborderw={TITLE_BOX_PADDING}"
             f":enable='between(t,0,{title_show_until:.1f})'"
-            f" [outv]"
+            f" [titlev]"
         )
     else:
-        filter_chain += "; [with_bar]null [outv]"
+        filter_chain += "; [with_bar]null [titlev]"
+
+    if is_shorts:
+        font_path = _resolve_font_path()
+        fp_escaped = _ffmpeg_font_path(font_path)
+        cta_plan = script_data.get("cta_plan", {})
+        middle_enabled = cta_plan.get("middle", "visual_only") == "visual_only" and MID_CTA_ENABLE_DEFAULT
+        end_enabled = cta_plan.get("end", "strong_verbal") == "strong_verbal"
+        current_label = "titlev"
+
+        if middle_enabled:
+            middle_text = _safe_drawtext_text("SUBSCRIBE")
+            middle_start = max(duration * MID_CTA_START_RATIO, 6.0)
+            middle_end = min(middle_start + MID_CTA_DURATION_SEC, max(duration - 5.0, middle_start + 0.6))
+            filter_chain += (
+                f"; [{current_label}]drawtext"
+                f"=fontfile='{fp_escaped}'"
+                f":text='{middle_text}'"
+                f":fontsize={MID_CTA_FONT_SIZE_SHORTS}"
+                f":fontcolor=white"
+                f":x=(w-text_w)-42:y={int(height * MID_CTA_Y_POS_RATIO)}"
+                f":box=1:boxcolor=black@{MID_CTA_BOX_OPACITY}:boxborderw=14"
+                f":shadowx=3:shadowy=3"
+                f":enable='between(t,{middle_start:.2f},{middle_end:.2f})'"
+                f" [midctav]"
+            )
+            current_label = "midctav"
+
+        if end_enabled:
+            end_text = _safe_drawtext_text(script_data.get("cta_visual_text", "SUBSCRIBE SEKARANG"))
+            end_start = max(duration - END_CTA_DURATION_SEC, 0.4)
+            filter_chain += (
+                f"; [{current_label}]drawtext"
+                f"=fontfile='{fp_escaped}'"
+                f":text='{end_text}'"
+                f":fontsize={END_CTA_FONT_SIZE_SHORTS}"
+                f":fontcolor=white"
+                f":x=(w-text_w)/2:y={int(height * END_CTA_Y_POS_RATIO)}"
+                f":box=1:boxcolor=black@{END_CTA_BOX_OPACITY}:boxborderw=24"
+                f":shadowx=5:shadowy=5"
+                f":enable='between(t,{end_start:.2f},{duration:.2f})'"
+                f" [outv]"
+            )
+        else:
+            filter_chain += f"; [{current_label}]null [outv]"
+    else:
+        filter_chain += "; [titlev]null [outv]"
 
     try:
         _run_ffmpeg_with_gpu_fallback(
@@ -1184,6 +1298,90 @@ def _mix_audio_with_ducking(narration_path: str, music_path: str,
     except Exception:
         logger.warning("Sidechain ducking gagal, fallback ke simple mix")
         _mix_audio_simple(narration_path, music_path, out_path, music_volume, duration)
+
+
+def _prepare_music_bed(music_plan: list[dict], tmp_dir: str, duration: float,
+                       fallback_mood: str, music_engine_module,
+                       channel_id: str, script_data: dict, profile: str) -> str:
+    valid_segments = [
+        seg for seg in (music_plan or [])
+        if isinstance(seg, dict) and seg.get("path") and os.path.exists(seg["path"])
+    ]
+    if not valid_segments:
+        return music_engine_module.fetch(
+            fallback_mood,
+            int(duration) + 3,
+            channel_id,
+            script_data=script_data,
+            profile=profile,
+        )
+    if len(valid_segments) == 1:
+        return valid_segments[0]["path"]
+
+    logger.info(
+        "Music arc: " + " | ".join(
+            f"{seg.get('label')}={seg.get('mood')}:{os.path.basename(seg.get('path', ''))}"
+            for seg in valid_segments
+        )
+    )
+
+    bed_path = os.path.join(tmp_dir, "music_bed.mp3")
+    try:
+        _render_music_bed(valid_segments, bed_path, duration)
+        return bed_path
+    except Exception as exc:
+        logger.warning(f"Music bed multi-track gagal ({exc}), fallback ke track opening")
+        return valid_segments[0]["path"]
+
+
+def _render_music_bed(music_plan: list[dict], out_path: str, duration: float):
+    inputs: list[str] = []
+    filter_parts: list[str] = []
+    mix_inputs: list[str] = []
+
+    for idx, segment in enumerate(music_plan):
+        path = segment["path"]
+        start = max(0.0, float(segment.get("start", 0.0)))
+        end = min(duration, float(segment.get("end", duration)))
+        seg_duration = end - start
+        if seg_duration < 1.0:
+            continue
+
+        inputs.extend(["-i", path])
+        fade_in = min(1.0, max(seg_duration * 0.18, 0.25))
+        fade_out = min(1.2, max(seg_duration * 0.20, 0.35))
+        fade_out_start = max(seg_duration - fade_out, 0.05)
+        trim_duration = min(seg_duration + 1.5, max(seg_duration, 1.5))
+        delay_ms = max(0, int(math.floor(start * 1000)))
+
+        filter_parts.append(
+            f"[{idx}:a]atrim=0:{trim_duration:.3f},asetpts=PTS-STARTPTS,"
+            f"afade=t=in:st=0:d={fade_in:.3f},"
+            f"afade=t=out:st={fade_out_start:.3f}:d={fade_out:.3f},"
+            f"adelay={delay_ms}|{delay_ms}[bg{idx}]"
+        )
+        mix_inputs.append(f"[bg{idx}]")
+
+    if not mix_inputs:
+        raise RuntimeError("Tidak ada segmen musik valid untuk dirender")
+
+    filter_parts.append(
+        "".join(mix_inputs) +
+        f"amix=inputs={len(mix_inputs)}:duration=longest:normalize=0,"
+        f"atrim=0:{duration:.3f},asetpts=PTS-STARTPTS[aout]"
+    )
+
+    cmd = [
+        "ffmpeg", "-y",
+        *inputs,
+        "-filter_complex", ";".join(filter_parts),
+        "-map", "[aout]",
+        "-c:a", "libmp3lame",
+        "-q:a", "2",
+        "-threads", str(FFMPEG_THREAD_COUNT),
+        out_path,
+    ]
+    _run_ffmpeg(cmd, "render_music_bed")
 
 
 def _mix_audio_simple(narration_path: str, music_path: str,

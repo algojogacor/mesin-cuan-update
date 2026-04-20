@@ -22,7 +22,7 @@ import os
 import shutil
 import traceback
 from dotenv import load_dotenv
-from engine.utils import get_logger, load_settings, channel_data_path
+from engine.utils import get_logger, load_settings, channel_data_path, load_json, save_json
 from engine import (
     topic_engine, script_engine, qc_engine,
     tts_engine, footage_engine, video_engine,
@@ -214,6 +214,45 @@ def run_daily_analytics():
             logger.info(f"[{channel['id']}] Fetching retention analytics...")
             analyze_channel(channel)
 
+
+def _infer_channel_id_from_script_path(script_path: str) -> str | None:
+    parts = os.path.normpath(script_path).split(os.sep)
+    if "data" in parts:
+        idx = parts.index("data")
+        if idx + 1 < len(parts):
+            return parts[idx + 1]
+    return None
+
+
+def review_script_file(script_path: str, channel_id: str | None = None) -> str:
+    settings = load_settings()
+    ch_map = {ch["id"]: ch for ch in settings.get("channels", [])}
+    inferred_channel_id = channel_id or _infer_channel_id_from_script_path(script_path)
+    channel = ch_map.get(inferred_channel_id or "")
+
+    if not channel:
+        raise ValueError(
+            "Channel untuk review script tidak ditemukan. "
+            "Gunakan --channel atau simpan file di data/<channel_id>/scripts/..."
+        )
+
+    script_data = load_json(script_path)
+    profile = script_data.get("profile", "shorts")
+    logger.info(f"[{channel['id']}] Review script file: {script_path}")
+    reviewed = script_engine.review_and_iterate(script_data, channel, profile=profile)
+
+    base, ext = os.path.splitext(script_path)
+    out_path = f"{base}_reviewed{ext}"
+    save_json(reviewed, out_path)
+
+    review_meta = reviewed.get("review_meta", {})
+    logger.info(
+        f"[{channel['id']}] Review done | initial={review_meta.get('initial_score')} "
+        f"| final={review_meta.get('final_score')} | rewritten={review_meta.get('rewritten')}"
+    )
+    logger.info(f"[{channel['id']}] Reviewed script saved: {out_path}")
+    return out_path
+
 # ─── Campaign batch render ────────────────────────────────────────────────────
 
 def run_campaign(target_channel_id=None, dry_run=False, skip_qc=False):
@@ -384,6 +423,7 @@ if __name__ == "__main__":
     parser.add_argument("--legacy",   action="store_true", help="Pakai daily_plan di settings.json")
     parser.add_argument("--analytics",action="store_true", help="Jalankan analytics harian untuk retention")
     parser.add_argument("--topic",    help="Inject topik manual (bypass topic_engine, untuk testing)")
+    parser.add_argument("--review-script", help="Nilai dan iterasi file script JSON yang sudah ada")
     parser.add_argument("--debug",    action="store_true", help="Enable verbose debug logging")
     parser.add_argument("--profile",  choices=["shorts", "long_form", "all"],
                         default="all", help="Render profile tertentu (legacy mode)")
@@ -408,6 +448,10 @@ if __name__ == "__main__":
     elif args.preview:
         from engine.campaign_engine import preview_campaign
         preview_campaign()
+
+    elif args.review_script:
+        logger.info(f"Mode: Review Script â†’ {args.review_script}")
+        review_script_file(args.review_script, channel_id=args.channel)
 
     elif args.topic:
         # ── Mode: Single test run dengan topik manual ─────────────────────────

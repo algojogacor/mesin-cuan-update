@@ -18,6 +18,8 @@ import json
 import os
 import re
 import time
+import random
+from copy import deepcopy
 import requests
 from engine.utils import get_logger, require_env, load_prompt, timestamp, save_json, channel_data_path
 
@@ -38,6 +40,42 @@ MAX_JSON_RETRY = 3
 # Ollama config
 OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
 OLLAMA_MODEL    = os.environ.get("OLLAMA_MODEL",    "deepseek-v3.1:671b-cloud")
+QWEN_API_BASE   = os.environ.get("QWEN_API_BASE",   "http://34.57.12.120:9000/v1")
+QWEN_MODEL      = os.environ.get("QWEN_MODEL",      "qwen3-235b-a22b")
+QWEN_MODEL_CANDIDATES = [
+    m.strip() for m in os.environ.get(
+        "QWEN_MODEL_CANDIDATES",
+        "qwen3-235b-a22b,qwen3-plus,qwen2.5-72b-instruct,qwen3-30b-a3b,qwen3-turbo"
+    ).split(",")
+    if m.strip()
+]
+
+SHORTS_REVIEW_MIN_SCORE = float(os.environ.get("SHORTS_REVIEW_MIN_SCORE", "8.4"))
+SHORTS_REVIEW_MAX_PASSES = 2
+SCRIPT_MAX_TOKENS_SHORTS = int(os.environ.get("SCRIPT_MAX_TOKENS_SHORTS", "2400"))
+SCRIPT_MAX_TOKENS_LONGFORM = int(os.environ.get("SCRIPT_MAX_TOKENS_LONGFORM", "7000"))
+SCRIPT_REVIEW_MAX_TOKENS = int(os.environ.get("SCRIPT_REVIEW_MAX_TOKENS", "3200"))
+
+
+def _post_json_no_proxy(url: str, headers: dict | None = None, payload: dict | None = None,
+                        timeout: int = 300) -> requests.Response:
+    session = requests.Session()
+    session.trust_env = False
+    try:
+        return session.post(url, headers=headers, json=payload, timeout=timeout)
+    finally:
+        session.close()
+
+
+def _qwen_models_to_try() -> list[str]:
+    models: list[str] = []
+    preferred = QWEN_MODEL.strip() if QWEN_MODEL else ""
+    if preferred:
+        models.append(preferred)
+    for model in QWEN_MODEL_CANDIDATES:
+        if model not in models:
+            models.append(model)
+    return models
 
 
 def generate(topic_data: dict, channel: dict, profile: str = "shorts") -> dict:
@@ -94,6 +132,9 @@ def generate(topic_data: dict, channel: dict, profile: str = "shorts") -> dict:
     result = inject_hook(result, channel)
     logger.info(f"[{ch_id}] Hook disuntikkan ke narasi")
 
+    if profile == "shorts":
+        result = review_and_iterate(result, channel, profile=profile)
+
     out_dir  = channel_data_path(ch_id, "scripts")
     out_path = f"{out_dir}/{timestamp()}_{profile}.json"
     save_json(result, out_path)
@@ -103,8 +144,12 @@ def generate(topic_data: dict, channel: dict, profile: str = "shorts") -> dict:
 
 
 def _call_ai(system_prompt: str, user_message: str, profile: str = "shorts") -> dict:
-    providers = [
-        ("DeepSeek/Ollama", lambda: _call_ollama(system_prompt, user_message, profile)),
+    primary_providers = [("DeepSeek/Ollama", lambda: _call_ollama(system_prompt, user_message, profile))]
+    if os.getenv("QWEN_API_KEY"):
+        primary_providers.append(("Qwen", lambda: _call_qwen(system_prompt, user_message, profile)))
+    random.shuffle(primary_providers)
+
+    providers = primary_providers + [
         ("Groq",            lambda: _call_groq(system_prompt, user_message, profile)),
         ("Gemini",          lambda: _call_gemini(system_prompt, user_message, profile)),
         ("Anthropic",       lambda: _call_anthropic(system_prompt, user_message, profile)),
@@ -120,7 +165,7 @@ def _call_ai(system_prompt: str, user_message: str, profile: str = "shorts") -> 
         except Exception as e:
             last_error = e
             logger.warning(f"❌ {name} gagal: {e}")
-            if name != "Anthropic":  # tidak perlu delay setelah provider terakhir
+            if name not in ("Anthropic", "DeepSeek/Ollama", "Qwen"):
                 logger.info(f"Tunggu {PROVIDER_SWITCH_DELAY}s sebelum provider berikutnya...")
                 time.sleep(PROVIDER_SWITCH_DELAY)
 
@@ -130,7 +175,7 @@ def _call_ai(system_prompt: str, user_message: str, profile: str = "shorts") -> 
 # ─── DeepSeek via Ollama ──────────────────────────────────────────────────────
 
 def _call_ollama(system_prompt: str, user_message: str, profile: str) -> dict:
-    max_tokens = 4500 if profile == "long_form" else 1200
+    max_tokens = SCRIPT_MAX_TOKENS_LONGFORM if profile == "long_form" else SCRIPT_MAX_TOKENS_SHORTS
 
     system_with_json = (
         system_prompt +
@@ -196,10 +241,89 @@ def _call_ollama(system_prompt: str, user_message: str, profile: str) -> dict:
 
 # ─── Groq ─────────────────────────────────────────────────────────────────────
 
+def _call_qwen(system_prompt: str, user_message: str, profile: str) -> dict:
+    max_tokens = SCRIPT_MAX_TOKENS_LONGFORM if profile == "long_form" else SCRIPT_MAX_TOKENS_SHORTS
+    api_key = require_env("QWEN_API_KEY")
+    max_attempts = 2 if profile == "shorts" else MAX_JSON_RETRY
+
+    system_with_json = (
+        system_prompt +
+        "\n\nCRITICAL: Respond with ONLY a raw JSON object. "
+        "No markdown, no ```json fences, no explanation. "
+        "Start directly with { and end with }."
+    )
+
+    last_error = None
+    for model_name in _qwen_models_to_try():
+        for attempt in range(1, max_attempts + 1):
+            user_msg = user_message + _get_length_hint(profile)
+            if attempt > 1:
+                user_msg += (
+                    f"\n\n[ATTEMPT {attempt}] IMPORTANT: Output ONLY valid JSON. "
+                    "No markdown, no prose, no code fences."
+                )
+
+            try:
+                resp = _post_json_no_proxy(
+                    f"{QWEN_API_BASE.rstrip('/')}/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    payload={
+                        "model": model_name,
+                        "messages": [
+                            {"role": "system", "content": system_with_json},
+                            {"role": "user", "content": user_msg},
+                        ],
+                        "temperature": max(0.3, 0.75 - (attempt - 1) * 0.2),
+                        "max_tokens": max_tokens,
+                    },
+                    timeout=300,
+                )
+                resp.raise_for_status()
+            except requests.HTTPError as exc:
+                last_error = exc
+                status_code = exc.response.status_code if exc.response is not None else None
+                logger.warning(f"Qwen model={model_name} HTTP error: {exc}")
+                if status_code in (400, 404):
+                    break
+                if attempt == max_attempts:
+                    break
+                continue
+            except Exception as exc:
+                last_error = exc
+                logger.warning(f"Qwen model={model_name} request gagal: {exc}")
+                if attempt == max_attempts:
+                    break
+                continue
+
+            raw = (
+                resp.json()
+                .get("choices", [{}])[0]
+                .get("message", {})
+                .get("content", "")
+                .strip()
+            )
+            if not raw:
+                logger.warning(f"Qwen model={model_name} attempt {attempt}: response kosong, retry...")
+                continue
+
+            try:
+                return _parse_json_response(raw, profile)
+            except (json.JSONDecodeError, ValueError) as e:
+                last_error = e
+                logger.warning(f"Qwen model={model_name} attempt {attempt}/{max_attempts}: JSON parse gagal â€” {e}")
+                if attempt == max_attempts:
+                    break
+
+    raise RuntimeError(f"Qwen: semua model/attempt gagal. Error terakhir: {last_error}")
+
+
 def _call_groq(system_prompt: str, user_message: str, profile: str) -> dict:
     from groq import Groq
     client     = Groq(api_key=require_env("GROQ_API_KEY"))
-    max_tokens = 3000 if profile == "long_form" else 1000
+    max_tokens = SCRIPT_MAX_TOKENS_LONGFORM if profile == "long_form" else SCRIPT_MAX_TOKENS_SHORTS
 
     for attempt in range(1, MAX_JSON_RETRY + 1):
         user_msg = user_message + _get_length_hint(profile)
@@ -274,7 +398,7 @@ def _call_gemini(system_prompt: str, user_message: str, profile: str) -> dict:
 def _call_anthropic(system_prompt: str, user_message: str, profile: str) -> dict:
     import anthropic
     client     = anthropic.Anthropic(api_key=require_env("ANTHROPIC_API_KEY"))
-    max_tokens = 3000 if profile == "long_form" else 1000
+    max_tokens = SCRIPT_MAX_TOKENS_LONGFORM if profile == "long_form" else SCRIPT_MAX_TOKENS_SHORTS
 
     for attempt in range(1, MAX_JSON_RETRY + 1):
         user_msg = user_message + _get_length_hint(profile)
@@ -443,6 +567,7 @@ def _validate_and_fix(data: dict, profile: str) -> dict:
             )
 
     else:
+        data = _normalize_shorts_schema(data)
         required = ["title", "script", "keywords", "tags", "description"]
         for field in required:
             if field not in data:
@@ -476,9 +601,13 @@ def _validate_and_fix(data: dict, profile: str) -> dict:
 def _get_length_hint(profile: str) -> str:
     if profile == "shorts":
         return (
-            "\n\nCRITICAL: The 'script' field MUST be highly detailed. "
-            "Write AT LEAST 4-5 long sentences, MORE than 80-120 words. "
-            "Expand on the facts with vivid details!"
+            "\n\nCRITICAL SHORTS JSON CONTRACT:\n"
+            "- You may output either a ready-to-use 'script' OR structured beats that can be assembled.\n"
+            "- Preferred structured fields: 'hook_line', 'anchor_line', 'body_beats', 'final_reveal', 'cta_line'.\n"
+            "- If you include 'body_beats', make it an array of 2-4 short beat objects or strings.\n"
+            "- Include 'visual_beats' with keys opening, middle, ending when possible.\n"
+            "- Include 'cta_plan' with start='none', middle='visual_only', end='strong_verbal'.\n"
+            "- Total spoken narration still MUST exceed 80 words once assembled."
         )
     else:
         return (
@@ -498,3 +627,342 @@ def _flatten_long_form_script(data: dict) -> str:
             parts.append(seg["narasi"])
     parts.append(data.get("outro", ""))    
     return "\n\n".join(p.strip() for p in parts if p.strip())
+
+
+def _normalize_shorts_schema(data: dict) -> dict:
+    """
+    Backward-compatible normalizer for the new beat-based shorts schema.
+    The prompt may return a monolithic script, structured beats, or both.
+    """
+    if not isinstance(data, dict):
+        return data
+
+    if not data.get("script"):
+        data["script"] = _compose_shorts_script(data)
+
+    if not data.get("visual_cues"):
+        visual_cues = _flatten_visual_beats(data.get("visual_beats"))
+        if visual_cues:
+            data["visual_cues"] = visual_cues
+
+    data.setdefault("cta_plan", {
+        "start": "none",
+        "middle": "visual_only",
+        "end": "strong_verbal",
+    })
+
+    if not data.get("cta_line"):
+        data["cta_line"] = _extract_last_sentence(data.get("script", ""))
+
+    if not data.get("cta_visual_text"):
+        data["cta_visual_text"] = _build_cta_visual_text(data)
+
+    if not data.get("music_mood"):
+        data["music_mood"] = "dark intro"
+
+    data.setdefault("music_direction", "")
+    if not isinstance(data.get("music_keywords"), list):
+        data["music_keywords"] = []
+    if not isinstance(data.get("music_arc"), list):
+        data["music_arc"] = []
+
+    if not data.get("keywords"):
+        data["keywords"] = data.get("tags", [])[:5]
+
+    _normalize_cta_language(data)
+
+    return data
+
+
+def _compose_shorts_script(data: dict) -> str:
+    parts: list[str] = []
+
+    for key in ("hook_line", "anchor_line"):
+        value = data.get(key, "")
+        if isinstance(value, str) and value.strip():
+            parts.append(value.strip())
+
+    body_beats = data.get("body_beats", [])
+    if isinstance(body_beats, list):
+        for beat in body_beats:
+            if isinstance(beat, dict):
+                text = beat.get("text") or beat.get("line") or beat.get("naration") or beat.get("narasi")
+            else:
+                text = beat
+            if isinstance(text, str) and text.strip():
+                parts.append(text.strip())
+
+    for key in ("final_reveal", "cta_line"):
+        value = data.get(key, "")
+        if isinstance(value, str) and value.strip():
+            parts.append(value.strip())
+
+    return " ".join(parts).strip()
+
+
+def _flatten_visual_beats(visual_beats) -> list[str]:
+    if not isinstance(visual_beats, dict):
+        return []
+
+    ordered_sections = ("opening", "middle", "ending")
+    flattened: list[str] = []
+    for section in ordered_sections:
+        beats = visual_beats.get(section, [])
+        if isinstance(beats, str):
+            beats = [beats]
+        if not isinstance(beats, list):
+            continue
+        for beat in beats:
+            if isinstance(beat, dict):
+                text = beat.get("cue") or beat.get("text") or beat.get("visual")
+            else:
+                text = beat
+            if isinstance(text, str) and text.strip():
+                flattened.append(text.strip())
+    return flattened
+
+
+def _extract_last_sentence(text: str) -> str:
+    if not text:
+        return ""
+    sentences = re.split(r"(?<=[.!?])\s+", " ".join(text.split()))
+    return sentences[-1].strip() if sentences else text.strip()
+
+
+def _build_cta_visual_text(data: dict) -> str:
+    title = (data.get("title", "") or "").strip()
+    if title:
+        return "SUBSCRIBE UNTUK FAKTA YANG LEBIH GELAP"
+    return "SUBSCRIBE UNTUK BAGIAN BERIKUTNYA"
+
+
+def _normalize_cta_language(data: dict) -> None:
+    cta_line = data.get("cta_line")
+    if isinstance(cta_line, str) and cta_line.strip():
+        normalized = re.sub(r"^\s*follow\b", "Subscribe", cta_line, flags=re.IGNORECASE)
+        normalized = re.sub(r"^\s*ikuti\b", "Subscribe", normalized, flags=re.IGNORECASE)
+        data["cta_line"] = normalized.strip()
+
+    cta_visual_text = data.get("cta_visual_text")
+    if isinstance(cta_visual_text, str) and cta_visual_text.strip():
+        normalized_visual = re.sub(r"^\s*follow\b", "SUBSCRIBE", cta_visual_text, flags=re.IGNORECASE)
+        normalized_visual = re.sub(r"^\s*ikuti\b", "SUBSCRIBE", normalized_visual, flags=re.IGNORECASE)
+        if "LEAK" in normalized_visual.upper():
+            normalized_visual = "SUBSCRIBE SEKARANG"
+        data["cta_visual_text"] = normalized_visual.strip()
+
+
+def review_and_iterate(script_data: dict, channel: dict, profile: str = "shorts") -> dict:
+    """
+    Retention-first review loop for Shorts.
+
+    Flow:
+    1. AI reviewer scores the draft.
+    2. If score is below threshold, reviewer must directly rewrite the script JSON.
+    3. Revised draft is scored one final time.
+    4. If still below threshold, keep the revised version anyway to avoid infinite loops.
+    """
+    if profile != "shorts":
+        return script_data
+
+    current = deepcopy(script_data)
+    threshold = SHORTS_REVIEW_MIN_SCORE
+
+    first_review = _review_script_payload(current, channel, threshold, mode="rewrite_if_below")
+    initial_score = float(first_review.get("score", 0))
+    rewritten = False
+
+    if initial_score < threshold and isinstance(first_review.get("updated_script"), dict):
+        current = _merge_reviewed_script(current, first_review["updated_script"], profile)
+        current = inject_hook(current, channel)
+        rewritten = True
+
+    final_score = initial_score
+    final_review = first_review
+    if rewritten and SHORTS_REVIEW_MAX_PASSES >= 2:
+        final_review = _review_script_payload(current, channel, threshold, mode="score_only")
+        final_score = float(final_review.get("score", initial_score))
+
+    current["review_meta"] = {
+        "threshold": threshold,
+        "initial_score": initial_score,
+        "final_score": final_score,
+        "initial_status": first_review.get("status", "unknown"),
+        "final_status": final_review.get("status", first_review.get("status", "unknown")),
+        "rewritten": rewritten,
+        "approved": final_score >= threshold or rewritten,
+        "provider": final_review.get("provider") or first_review.get("provider"),
+        "notes": final_review.get("reason") or first_review.get("reason", ""),
+    }
+    current["retention_score"] = final_score
+    logger.info(
+        f"[{channel['id']}] Review retention: {initial_score:.1f} -> {final_score:.1f} "
+        f"| rewritten={rewritten}"
+    )
+    return current
+
+
+def _review_script_payload(script_data: dict, channel: dict, threshold: float, mode: str) -> dict:
+    prompt = _build_review_prompt(script_data, channel, threshold, mode)
+    providers = ["DeepSeek/Ollama", "Groq"]
+    if os.getenv("QWEN_API_KEY"):
+        providers.append("Qwen")
+    random.shuffle(providers)
+
+    last_error = None
+    for provider in providers:
+        try:
+            raw = _call_review_provider(provider, prompt)
+            data = _clean_raw_json(raw)
+            review = json.loads(data)
+            review["provider"] = provider
+            return review
+        except Exception as exc:
+            last_error = exc
+            logger.warning(f"Review provider {provider} gagal: {exc}")
+
+    raise RuntimeError(f"Semua reviewer gagal. Error terakhir: {last_error}")
+
+
+def _call_review_provider(provider: str, prompt: str) -> str:
+    if provider == "DeepSeek/Ollama":
+        resp = requests.post(
+            f"{OLLAMA_BASE_URL}/api/chat",
+            json={
+                "model": OLLAMA_MODEL,
+                "messages": [
+                    {"role": "system", "content": "You are a ruthless short-form editor. Output JSON only."},
+                    {"role": "user", "content": prompt},
+                ],
+                "stream": False,
+                "format": "json",
+                "options": {"temperature": 0.35, "num_predict": SCRIPT_REVIEW_MAX_TOKENS, "num_ctx": 8192},
+            },
+            timeout=300,
+        )
+        resp.raise_for_status()
+        return resp.json().get("message", {}).get("content", "").strip()
+
+    if provider == "Qwen":
+        last_error = None
+        for model_name in _qwen_models_to_try():
+            try:
+                resp = _post_json_no_proxy(
+                    f"{QWEN_API_BASE.rstrip('/')}/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {require_env('QWEN_API_KEY')}",
+                        "Content-Type": "application/json",
+                    },
+                    payload={
+                        "model": model_name,
+                        "messages": [
+                            {"role": "system", "content": "You are a ruthless short-form editor. Output JSON only."},
+                            {"role": "user", "content": prompt},
+                        ],
+                        "temperature": 0.35,
+                        "max_tokens": SCRIPT_REVIEW_MAX_TOKENS,
+                    },
+                    timeout=300,
+                )
+                resp.raise_for_status()
+                return (
+                    resp.json()
+                    .get("choices", [{}])[0]
+                    .get("message", {})
+                    .get("content", "")
+                    .strip()
+                )
+            except Exception as exc:
+                last_error = exc
+                logger.warning(f"Review Qwen model={model_name} gagal: {exc}")
+        raise RuntimeError(f"Review Qwen gagal di semua model: {last_error}")
+
+    if provider == "Groq":
+        from groq import Groq
+
+        client = Groq(api_key=require_env("GROQ_API_KEY"))
+        resp = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[
+                {"role": "system", "content": "You are a ruthless short-form editor. Output JSON only."},
+                {"role": "user", "content": prompt},
+            ],
+            response_format={"type": "json_object"},
+            temperature=0.35,
+            max_tokens=SCRIPT_REVIEW_MAX_TOKENS,
+        )
+        return resp.choices[0].message.content.strip()
+
+    raise ValueError(f"Provider review tidak dikenal: {provider}")
+
+
+def _build_review_prompt(script_data: dict, channel: dict, threshold: float, mode: str) -> str:
+    language = "Bahasa Indonesia" if channel.get("language") == "id" else "English"
+    niche = channel.get("niche", "horror_facts")
+    mode_rules = (
+        "If the score is below threshold, you MUST rewrite the script directly and return a full updated_script object."
+        if mode == "rewrite_if_below"
+        else "Score only. Do NOT rewrite the script. Set updated_script to null."
+    )
+
+    return f"""You are a retention-first YouTube Shorts editor.
+Evaluate this script for retention, not factual accuracy.
+
+Editorial stance:
+- Creepypasta, urban legend, and dark plausible storytelling are allowed.
+- Judge only on hook strength, escalation, pacing, tension, ending residue, CTA fit, and visual sharpness.
+- Do not punish the script for being speculative if it sounds cinematic and sticky.
+- Avoid generic filler and avoid anti-climactic explanations.
+- Ending visual beats must not contain UI instructions like subscribe button overlays.
+- Prefer music moods 'dark intro' or 'horror tension' for aggressive horror openings.
+
+Language: {language}
+Niche: {niche}
+Threshold: {threshold}
+Mode: {mode}
+{mode_rules}
+
+Return JSON only:
+{{
+  "score": 0-10,
+  "status": "approved|rewrite|forced_pass",
+  "reason": "short reason",
+  "updated_script": {{
+    "title": "...",
+    "hook_type": "...",
+    "hook_line": "...",
+    "anchor_line": "...",
+    "body_beats": [{{"purpose":"...","text":"..."}}],
+    "final_reveal": "...",
+    "cta_line": "...",
+    "script": "...",
+    "cta_plan": {{"start":"none","middle":"visual_only","end":"strong_verbal"}},
+    "cta_visual_text": "...",
+    "music_mood": "...",
+    "music_direction": "...",
+    "music_keywords": ["..."],
+    "music_arc": ["..."],
+    "keywords": ["..."],
+    "tags": ["..."],
+    "description": "...",
+    "visual_beats": {{"opening":["..."],"middle":["..."],"ending":["..."]}},
+    "visual_cues": ["..."]
+  }}
+}}
+
+SCRIPT JSON:
+{json.dumps(script_data, ensure_ascii=False, indent=2)}
+"""
+
+
+def _merge_reviewed_script(original: dict, updated: dict, profile: str) -> dict:
+    merged = deepcopy(original)
+    for key, value in updated.items():
+        merged[key] = value
+
+    merged["topic"] = original.get("topic", merged.get("topic"))
+    merged["profile"] = original.get("profile", profile)
+    merged["is_viral_iteration"] = original.get("is_viral_iteration", False)
+
+    merged = _normalize_shorts_schema(merged)
+    return _validate_and_fix(merged, profile)

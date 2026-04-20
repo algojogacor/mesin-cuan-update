@@ -99,7 +99,7 @@
     "embeddable": true,
     "public_stats_viewable": true,
     "license": "youtube",
-    "contains_synthetic_media": true,
+    "contains_synthetic_media": false,
     "delay_between_uploads_sec": 45
   },
 
@@ -115,7 +115,7 @@
   },
 
   "ai_disclosure": {
-    "has_synthetic_audio": true,
-    "has_altered_visual": true
+    "has_synthetic_audio": false,
+    "has_altered_visual": false
   }
 }

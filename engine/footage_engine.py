@@ -47,6 +47,7 @@ SEARCH_TIMEOUT       = 20   # Timeout API search (detik)
 DOWNLOAD_TIMEOUT     = 120  # Timeout download file (detik)
 CLIP_CACHE_MAX_KEYS  = 500  # Maks entry keyword cache (FIFO cleanup)
 USED_CLIPS_MAX       = 1000 # Maks ID clip yang disimpan sebagai "sudah dipakai"
+SHORTS_MIN_CLIPS     = 10   # Shorts butuh lebih banyak opsi agar pacing visual tetap rapat
 
 # ── Fallback Pool ──────────────────────────────────────────────────────────────
 FALLBACK_POOL_MIN_COUNT = 15  # Minimal clips per niche di fallback pool lokal
@@ -167,6 +168,14 @@ def _fetch_shorts(script_data: dict, ch_id: str, niche: str, profile: str) -> li
     """
     keywords: list = []
 
+    for query in (
+        _extract_visual_beat_queries(script_data, "opening")
+        + _extract_visual_beat_queries(script_data, "middle")
+        + _extract_visual_beat_queries(script_data, "ending")
+    ):
+        if query and query not in keywords:
+            keywords.append(query)
+
     # ── Sumber 1: visual_cues (PRIORITAS — paling spesifik per video) ─────────
     raw_visual_cues = script_data.get("visual_cues", [])
     if isinstance(raw_visual_cues, list):
@@ -192,7 +201,7 @@ def _fetch_shorts(script_data: dict, ch_id: str, niche: str, profile: str) -> li
         bank_kws = _get_niche_keywords(niche, count=4)
         keywords += [k for k in bank_kws if k not in keywords]
 
-    n_clips = load_settings().get("footage", {}).get("clips_per_video", 7)
+    n_clips = max(load_settings().get("footage", {}).get("clips_per_video", 7), SHORTS_MIN_CLIPS)
     logger.info(
         f"[{ch_id}] Shorts fetch {n_clips} clips | niche={niche} | "
         f"visual_cues={len(raw_visual_cues)} | total_kw={len(keywords)} | "
@@ -349,6 +358,30 @@ def _parse_visual_cue_to_query(cue: str) -> str:
     final_query = " ".join(words[:5])
 
     return final_query if len(final_query) > 3 else ""
+
+
+def _extract_visual_beat_queries(script_data: dict, section: str) -> list:
+    """Ambil query dari schema visual_beats sambil menjaga urutan editorial."""
+    visual_beats = script_data.get("visual_beats", {})
+    if not isinstance(visual_beats, dict):
+        return []
+
+    beats = visual_beats.get(section, [])
+    if isinstance(beats, str):
+        beats = [beats]
+    if not isinstance(beats, list):
+        return []
+
+    queries: list = []
+    for beat in beats:
+        if isinstance(beat, dict):
+            text = beat.get("cue") or beat.get("text") or beat.get("visual")
+        else:
+            text = beat
+        query = _parse_visual_cue_to_query(text)
+        if query and query not in queries:
+            queries.append(query)
+    return queries
 
 
 # ══════════════════════════════════════════════════════════════════════════════

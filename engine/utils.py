@@ -26,11 +26,19 @@ def get_logger(name: str) -> logging.Logger:
         logger.addHandler(ch)
 
         os.makedirs("logs", exist_ok=True)
-        fh = logging.FileHandler(
-            f"logs/pipeline_{datetime.now().strftime('%Y%m%d')}.log", encoding='utf-8'
-        )
-        fh.setFormatter(formatter)
-        logger.addHandler(fh)
+        log_date = datetime.now().strftime("%Y%m%d")
+        primary_log = f"logs/pipeline_{log_date}.log"
+        fallback_log = f"logs/pipeline_{log_date}_{os.getpid()}.log"
+        try:
+            fh = logging.FileHandler(primary_log, encoding='utf-8')
+        except PermissionError:
+            try:
+                fh = logging.FileHandler(fallback_log, encoding='utf-8')
+            except PermissionError:
+                fh = None
+        if fh:
+            fh.setFormatter(formatter)
+            logger.addHandler(fh)
 
     return logger
 
