@@ -220,10 +220,10 @@ NICHE_TITLE_SHADOW_COLOR: dict = {
 # PI/3.5 ≈ 35% opacity (horror) | PI/5 ≈ 20% | PI/6 ≈ 15%
 # Sebelumnya semua hardcoded PI/4 — sekarang per niche
 NICHE_VIGNETTE_FILTER: dict = {
-    "horror_facts": "vignette=PI/3.5:eval=frame",  # Gelap di pinggir — horror
-    "drama":        "vignette=PI/3.5:eval=frame",  # Sama dengan horror
-    "crime":        "vignette=PI/3.8:eval=frame",  # Sedikit lebih terang
-    "history":      "vignette=PI/4:eval=frame",    # Standard
+    "horror_facts": "vignette=PI/5:eval=frame",  # Gelap di pinggir — horror
+    "drama":        "vignette=PI/5:eval=frame",  # Sama dengan horror
+    "crime":        "vignette=PI/5:eval=frame",  # Sedikit lebih terang
+    "history":      "vignette=PI/5:eval=frame",    # Standard
     "psychology":   "vignette=PI/6:eval=frame",    # Minimal — clean & profesional
     "motivation":   "vignette=PI/6:eval=frame",    # Minimal — energetik
     "science":      "vignette=PI/6:eval=frame",    # Minimal

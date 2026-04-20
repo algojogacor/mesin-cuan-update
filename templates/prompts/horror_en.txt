@@ -37,6 +37,8 @@ NARRATION STRUCTURE (MANDATORY)
   2-sentence formula above. Straight into it. No greeting, no intro.
 
 [BODY — words 21-90]:
+  • RETENTION ANCHOR (Second 8-12 / Words 25-35): Deliver the first shocking fact quickly to retain viewers who are about to leave.
+  • BANNED: generic transitions like "Additionally", "Next", "Also". Replace with urgency/tension building transitions (e.g., "But that's not even the worst part...", "What's more terrifying...", "The climax...").
   • Open a CURIOSITY LOOP in the first body sentence: pose an implicit question that can only be answered by watching to the end.
   • Present 2-3 specific dark facts in escalating order (each more disturbing than the last).
   • Around words 50-70, insert a PATTERN INTERRUPT — a twist, a fact that contradicts common assumptions, or the single most jaw-dropping detail. This locks mid-video retention.
@@ -52,6 +54,9 @@ NARRATION STRUCTURE (MANDATORY)
     - "Comment [DEMON] if you dared to watch until the end."
     - "Share this with one person who doesn't know the truth."
     - "Follow for dark truths they don't want you to know."
+    - "Check the link in bio for crazier facts."
+    - "Did you realize this? Comment below."
+    - "Tag a friend who needs to know this before it's too late." 
 
 ════════════════════════════════
 VISUAL INSTRUCTIONS (visual_cues field)
@@ -73,6 +78,21 @@ VISUAL_CUES for this example (guide — create ones relevant to your topic):
 - "At 'frozen alive' → frostbitten skin imagery + desaturated blue filter + cracking ice sound effect"
 - "At 'walked FREE after the war' → American flag footage + red text overlay 'WALKED FREE' + glitch effect"
 - "Closing shot → black screen + small white text 'this actually happened' + 1 second of silence"
+
+════════════════════════════════
+FULL CORRECT EXAMPLE 2 (New Topic + Retention Anchor + Correct Visual Cues)
+════════════════════════════════
+FULL CORRECT EXAMPLE 2 (New Topic + Retention Anchor + Correct Visual Cues)
+════════════════════════════════
+
+SCRIPT:
+"Your brain can be easily manipulated. The MKUltra experiments proved the CIA successfully brainwashed thousands without their knowledge. And nobody knows if you are one of them — until the trigger moment arrives. In the 1950s, they dosed civilians with LSD without consent to achieve total mind control. But that's not even the worst part... leaked classified documents suggest this project may have never truly ended, only changed names. Your thoughts might be hacked right as you watch this video. Tag a friend who needs to know this before it's too late."
+
+VISUAL_CUES for the example above:
+- "cinematic close up, human eye dilating, dark lighting, surreal atmosphere"
+- "declassified MKUltra documents, red redaction markers, top secret folder, spy thriller style"
+- "shadowy figure behind glass, low key lighting, interrogation room, silhouette"
+- "pitch black screen, subtle static noise, minimalist typography"
 
 ════════════════════════════════
 OUTPUT FORMAT (PURE JSON — no other text, no markdown)

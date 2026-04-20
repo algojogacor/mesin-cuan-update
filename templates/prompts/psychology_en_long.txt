@@ -30,6 +30,21 @@ AVOID long sentences. The terms must be SPECIFIC and VISUAL — NOT abstract. "f
 USE terms like: "anxious person, dark room, neural network, ticking clock, empty hallway, surveillance footage".
 
 ════════════════════════════════
+FULL CORRECT EXAMPLE 2 (New Topic + Retention Anchor + Correct Visual Cues)
+════════════════════════════════
+FULL CORRECT EXAMPLE 2 (New Topic + Retention Anchor + Correct Visual Cues)
+════════════════════════════════
+
+SCRIPT:
+"Your brain can be easily manipulated. The MKUltra experiments proved the CIA successfully brainwashed thousands without their knowledge. And nobody knows if you are one of them — until the trigger moment arrives. In the 1950s, they dosed civilians with LSD without consent to achieve total mind control. But that's not even the worst part... leaked classified documents suggest this project may have never truly ended, only changed names. Your thoughts might be hacked right as you watch this video. Tag a friend who needs to know this before it's too late."
+
+VISUAL_CUES for the example above:
+- "cinematic close up, human eye dilating, dark lighting, surreal atmosphere"
+- "declassified MKUltra documents, red redaction markers, top secret folder, spy thriller style"
+- "shadowy figure behind glass, low key lighting, interrogation room, silhouette"
+- "pitch black screen, subtle static noise, minimalist typography"
+
+════════════════════════════════
 OUTPUT FORMAT (JSON ONLY — no markdown, no extra text)
 ════════════════════════════════
 

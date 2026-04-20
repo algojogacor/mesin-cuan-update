@@ -116,6 +116,10 @@ ENV/
 .project
 .pydevproject
 pyrightconfig.json
+venv_tts/
+__pycache__/
+*.pyc
+.env
 
 
 # ── OPERATING SYSTEM ─────────────────────────────────────────

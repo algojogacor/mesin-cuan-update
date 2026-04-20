@@ -25,6 +25,19 @@ Step 2 — PERSONAL IMPLICATION (directly threatening the viewer's mind):
   Connect the fact to the viewer's current mental state — make them feel THREATENED or UNAWARE.
   Pattern examples: "And [X] has been running inside your mind since this very second." / "You might already be [victim of X] without knowing it."
 
+
+5 Primary Emotions Guide (Choose One):
+1. Fear of loss
+2. Shame/Embarrassment
+3. Identity threat
+4. Factual shock
+5. Painful curiosity gap
+
+Viral Tweet Test: If this hook were a Tweet, would people stop scrolling?
+
+EXTREME CONTRAST HOOK EXAMPLE:
+  "You think [Normal Assumption]? Wrong. [Dark Twisted Fact]."
+
 EXAMPLE OF CORRECT HOOK (follow this pattern, NOT the content):
   Bad:  "Your brain can be easily manipulated."
   Good: "The Milgram Experiment proved 65% of people will harm an innocent stranger if ordered by an authority figure." + "And nobody knows if you're in that 65% — until the moment arrives."
@@ -37,6 +50,8 @@ NARRATION STRUCTURE (MUST FOLLOW)
   The 2-sentence formula above. Hit hard immediately. No greetings, no intro fluff.
 
 [BODY — words 21-90]:
+  • RETENTION ANCHOR (Second 8-12 / Words 25-35): Deliver the first shocking fact quickly to retain viewers who are about to leave.
+  • BANNED: generic transitions like "Additionally", "Next", "Also". Replace with urgency/tension building transitions (e.g., "But that's not even the worst part...", "What's more terrifying...", "The climax...").
   • Open a CURIOSITY LOOP in the first body sentence: pose an implicit question that can only be answered by watching to the end.
   • Present 2-3 specific dark psychological facts in escalating order (each more disturbing than the last).
   • Around words 50–70, insert a PATTERN INTERRUPT — a psychological twist, a fact that contradicts common assumptions, or the most shocking implication. This is your mid-video retention anchor.
@@ -53,14 +68,18 @@ NARRATION STRUCTURE (MUST FOLLOW)
     - "Comment [AWARE] if you already knew this truth."
     - "Share this with one person whose mind is being manipulated right now."
     - "Follow for dark truths that this industry doesn't want you to know."
+    - "Check the link in bio for crazier facts."
+    - "Did you realize this? Comment below."
+    - "Tag a friend who needs to know this before it's too late." 
 
 ════════════════════════════════
 VISUAL INSTRUCTIONS (visual_cues field)
 ════════════════════════════════
 
 Must produce 3–4 specific, actionable visual/B-roll instructions for the video editor.
-Each instruction must describe: WHAT IMAGE + WHAT EFFECT + AT WHICH MOMENT in the script.
-Example format: "At '...65% will harm a stranger' → show footage of person in experiment chair + red glitch effect + slow motion."
+Each instruction MUST use specific cinematic English keywords, NOT generic editing effects.
+Correct Example: "cinematic wide shot, abandoned asylum, eerie fog, 4k resolution"
+Wrong Example: "empty hospital + zoom in + glitch effect"
 
 ════════════════════════════════
 FULL CORRECT EXAMPLE (96 words)
@@ -74,6 +93,21 @@ VISUAL_CUES for the example above (use as style reference, create ones matching 
 - "At 'memory reconsolidation' → brain neuron animation with flash highlights + desaturated blue tones + text overlay 'REWRITTEN'"
 - "At 'Elizabeth Loftus implanted false memories' → empty experiment room footage + ticking clock sound + distortion effect"
 - "Closing shot → black screen + small white text 'your mind is not your own' + 1 second of silence"
+
+════════════════════════════════
+FULL CORRECT EXAMPLE 2 (New Topic + Retention Anchor + Correct Visual Cues)
+════════════════════════════════
+FULL CORRECT EXAMPLE 2 (New Topic + Retention Anchor + Correct Visual Cues)
+════════════════════════════════
+
+SCRIPT:
+"Your brain can be easily manipulated. The MKUltra experiments proved the CIA successfully brainwashed thousands without their knowledge. And nobody knows if you are one of them — until the trigger moment arrives. In the 1950s, they dosed civilians with LSD without consent to achieve total mind control. But that's not even the worst part... leaked classified documents suggest this project may have never truly ended, only changed names. Your thoughts might be hacked right as you watch this video. Tag a friend who needs to know this before it's too late."
+
+VISUAL_CUES for the example above:
+- "cinematic close up, human eye dilating, dark lighting, surreal atmosphere"
+- "declassified MKUltra documents, red redaction markers, top secret folder, spy thriller style"
+- "shadowy figure behind glass, low key lighting, interrogation room, silhouette"
+- "pitch black screen, subtle static noise, minimalist typography"
 
 ════════════════════════════════
 OUTPUT FORMAT (PURE JSON — no other text, no markdown)

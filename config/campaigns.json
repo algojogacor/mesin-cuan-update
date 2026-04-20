@@ -28,14 +28,14 @@
       "active": true,
       "schedule": {
         "type": "range",
-        "start_date": "2026-04-09",
-        "end_date": "2026-04-10"
+        "start_date": "2026-04-21",
+        "end_date": "2026-04-24"
       },
       "per_channel": {
         "ch_id_horror": {
-          "shorts_per_day": 1,
+          "shorts_per_day": 3,
           "long_form_per_day": 0,
-          "publish_hours_wib": [7, 10, 13, 17, 22]
+          "publish_hours_wib": [7, 12, 17, 20, 22]
         },
         "ch_id_psych": {
           "shorts_per_day": 1,
