@@ -22,7 +22,7 @@ import os
 import shutil
 import traceback
 from dotenv import load_dotenv
-from engine.utils import get_logger, load_settings, channel_data_path, load_json, save_json
+from engine.utils import get_logger, load_settings, channel_data_path, load_json, save_json, timestamp
 from engine import (
     topic_engine, script_engine, qc_engine,
     tts_engine, footage_engine, video_engine,
@@ -243,15 +243,75 @@ def review_script_file(script_path: str, channel_id: str | None = None) -> str:
 
     base, ext = os.path.splitext(script_path)
     out_path = f"{base}_reviewed{ext}"
-    save_json(reviewed, out_path)
+    out_path = _save_review_payload(reviewed, out_path, channel["id"], "reviewed")
 
     review_meta = reviewed.get("review_meta", {})
     logger.info(
         f"[{channel['id']}] Review done | initial={review_meta.get('initial_score')} "
         f"| final={review_meta.get('final_score')} | rewritten={review_meta.get('rewritten')}"
     )
-    logger.info(f"[{channel['id']}] Reviewed script saved: {out_path}")
+    if out_path:
+        logger.info(f"[{channel['id']}] Reviewed script saved: {out_path}")
+    else:
+        logger.warning(f"[{channel['id']}] Reviewed script tidak bisa disimpan di environment ini")
     return out_path
+
+
+def review_hook_file(script_path: str, channel_id: str | None = None) -> str:
+    settings = load_settings()
+    ch_map = {ch["id"]: ch for ch in settings.get("channels", [])}
+    inferred_channel_id = channel_id or _infer_channel_id_from_script_path(script_path)
+    channel = ch_map.get(inferred_channel_id or "")
+
+    if not channel:
+        raise ValueError(
+            "Channel untuk review hook tidak ditemukan. "
+            "Gunakan --channel atau simpan file di data/<channel_id>/scripts/..."
+        )
+
+    script_data = load_json(script_path)
+    profile = script_data.get("profile", "shorts")
+    logger.info(f"[{channel['id']}] Review hook file: {script_path}")
+    reviewed = script_engine.review_hook_only(script_data, channel, profile=profile)
+
+    base, ext = os.path.splitext(script_path)
+    out_path = f"{base}_hooked{ext}"
+    out_path = _save_review_payload(reviewed, out_path, channel["id"], "hooked")
+
+    hook_meta = reviewed.get("hook_meta", {})
+    logger.info(
+        f"[{channel['id']}] Hook review done | total={hook_meta.get('score')} "
+        f"| 0-3s={hook_meta.get('hook_score_0_3')} "
+        f"| 4-10s={hook_meta.get('anchor_score_4_10')} "
+        f"| rewritten={hook_meta.get('rewritten')}"
+    )
+    if out_path:
+        logger.info(f"[{channel['id']}] Hook-reviewed script saved: {out_path}")
+    else:
+        logger.warning(f"[{channel['id']}] Hook-reviewed script tidak bisa disimpan di environment ini")
+    return out_path
+
+
+def _save_review_payload(data: dict, preferred_path: str, channel_id: str, suffix: str) -> str:
+    try:
+        save_json(data, preferred_path)
+        return preferred_path
+    except PermissionError:
+        try:
+            fallback_dir = channel_data_path(channel_id, "scripts")
+            fallback_name = f"{timestamp()}_{suffix}.json"
+            fallback_path = os.path.join(fallback_dir, fallback_name)
+            save_json(data, fallback_path)
+            logger.warning(
+                f"[{channel_id}] Path review default terkunci, simpan fallback ke {fallback_path}"
+            )
+            return fallback_path
+        except PermissionError:
+            logger.warning(
+                f"[{channel_id}] Tidak bisa menulis file review di environment ini. "
+                "Hasil audit tetap terlihat di log."
+            )
+            return ""
 
 # ─── Campaign batch render ────────────────────────────────────────────────────
 
@@ -414,7 +474,12 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Auto Content Machine",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="Contoh testing: python main.py --channel ch_horror_id --topic \"Eksperimen Tidur Rusia\" --dry-run --debug"
+        epilog=(
+            "Contoh testing:\n"
+            "  python main.py --channel ch_horror_id --topic \"Eksperimen Tidur Rusia\" --dry-run --debug\n"
+            "  python main.py --channel ch_id_horror --topic \"Kaset ritual terlarang\" --script-only\n"
+            "  python main.py --review-hook data\\ch_id_horror\\scripts\\file.json --channel ch_id_horror"
+        )
     )
     parser.add_argument("--channel",  help="Jalankan 1 channel saja (by id)")
     parser.add_argument("--dry-run",  action="store_true", help="Test tanpa upload ke GDrive")
@@ -424,6 +489,8 @@ if __name__ == "__main__":
     parser.add_argument("--analytics",action="store_true", help="Jalankan analytics harian untuk retention")
     parser.add_argument("--topic",    help="Inject topik manual (bypass topic_engine, untuk testing)")
     parser.add_argument("--review-script", help="Nilai dan iterasi file script JSON yang sudah ada")
+    parser.add_argument("--review-hook", help="Audit dan upgrade hook saja dari file script JSON yang sudah ada")
+    parser.add_argument("--script-only", action="store_true", help="Generate script saja tanpa TTS/render/upload")
     parser.add_argument("--debug",    action="store_true", help="Enable verbose debug logging")
     parser.add_argument("--profile",  choices=["shorts", "long_form", "all"],
                         default="all", help="Render profile tertentu (legacy mode)")
@@ -453,6 +520,10 @@ if __name__ == "__main__":
         logger.info(f"Mode: Review Script â†’ {args.review_script}")
         review_script_file(args.review_script, channel_id=args.channel)
 
+    elif args.review_hook:
+        logger.info(f"Mode: Review Hook -> {args.review_hook}")
+        review_hook_file(args.review_hook, channel_id=args.channel)
+
     elif args.topic:
         # ── Mode: Single test run dengan topik manual ─────────────────────────
         logger.info(f"Mode: Manual Topic Test → channel={args.channel} topic='{args.topic}'")
@@ -464,13 +535,25 @@ if __name__ == "__main__":
             raise SystemExit(1)
         state_manager.init_db()
         profile = args.profile if args.profile != "all" else "shorts"
-        success = run_once(
-            channel,
-            profile=profile,
-            dry_run=args.dry_run,
-            skip_qc=args.skip_qc,
-            topic_override=args.topic,
-        )
+        if args.script_only:
+            topic_data = {
+                "topic": args.topic,
+                "niche": channel.get("niche", "horror_facts"),
+                "language": channel.get("language", "id"),
+                "is_viral_iteration": False,
+                "topic_source": "manual_topic_test",
+            }
+            script_data = script_engine.generate(topic_data, channel, profile=profile)
+            success = bool(script_data.get("script_path"))
+            logger.info(f"[{channel['id']}] Script-only selesai -> {script_data.get('script_path')}")
+        else:
+            success = run_once(
+                channel,
+                profile=profile,
+                dry_run=args.dry_run,
+                skip_qc=args.skip_qc,
+                topic_override=args.topic,
+            )
         logger.info("✅ Test selesai" if success else "❌ Test gagal")
 
     elif args.legacy:

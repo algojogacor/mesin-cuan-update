@@ -23,11 +23,14 @@ DURATION TARGET
 REQUIRED STORY BEATS
 1. hook_line
    The hardest opening line that forces the viewer to stop scrolling.
+   Also include hook_score and hook_reason to justify why this hook should work.
 2. anchor_line
    The second line that locks curiosity and makes the threat feel immediate.
 3. body_beats
    An array of 2-4 short beats. Every beat must escalate.
    One beat must function as a true pattern interrupt.
+   Pattern interrupt = a fact or twist that bends against the viewer's expectation from the previous beat.
+   It is not just a "shocking fact". It must redirect the perceived direction of the story.
 4. final_reveal
    The last reveal before the CTA. It must leave mystery residue behind.
 5. cta_line
@@ -45,6 +48,9 @@ CTA RULES
 - cta_plan.middle must be "visual_only"
 - cta_plan.end must be "strong_verbal"
 - cta_visual_text must be short, max 6 words, suitable for an ending overlay.
+- cta_visual_text must be dynamic and case-specific.
+- Avoid lazy generic defaults if a darker, sharper phrase fits the case better.
+- Desired vibe examples: "IF YOU DARE CONTINUE", "SAVE BEFORE IT VANISHES", "THE DARK PART TOMORROW".
 
 MUSIC
 - music_mood must be one of:
@@ -54,11 +60,21 @@ MUSIC
 - music_keywords: 3-5 English keywords to help pick the best local track.
 - music_arc: 2-3 short beats describing the energy arc from opening to ending.
 
+CREATIVE DIRECTION
+- creative_direction.thumbnail_text: 1-3 sharp words for a horror thumbnail. Avoid long phrases.
+- creative_direction.thumbnail_style: a short phrase for the packaging look. Example: "forbidden evidence", "ritual panic", "archival dread", "possession shock".
+- creative_direction.opening_visual_priority: the single most important opening visual cue.
+- creative_direction.packaging_angle: the emotional packaging angle. Example: "hidden cover-up", "cursed evidence", "disturbing proof".
+- Do not reuse overly generic thumbnail words. Pick something sharper and more case-specific.
+- You may receive a Creative Memory block from previous horror videos. Use it to avoid repeating recent hook, CTA, and packaging patterns.
+
 OUTPUT JSON ONLY
 {
   "title": "A sharp, highly clickable, high-retention title (max 70 chars)",
   "hook_type": "One label: stat_attack | conspiracy_reveal | historical_shock | body_horror | forbidden_record",
   "hook_line": "The hardest opening line",
+  "hook_score": 8,
+  "hook_reason": "Why this hook should work in the first 0-3 seconds",
   "anchor_line": "The line that locks early retention",
   "body_beats": [
     {"purpose": "escalation_1", "text": "Beat 1"},
@@ -73,11 +89,17 @@ OUTPUT JSON ONLY
     "middle": "visual_only",
     "end": "strong_verbal"
   },
-  "cta_visual_text": "SUBSCRIBE NOW",
+  "cta_visual_text": "short overlay CTA matching the case vibe",
   "music_mood": "dark intro",
   "music_direction": "short sentence about the best music feeling",
   "music_keywords": ["eerie", "ominous", "archival tension"],
   "music_arc": ["cold eerie opening", "rising possession tension", "dark unresolved ending"],
+  "creative_direction": {
+    "thumbnail_text": "FORBIDDEN",
+    "thumbnail_style": "forbidden evidence",
+    "opening_visual_priority": "sealed vatican archive folder close up",
+    "packaging_angle": "hidden cover-up"
+  },
   "keywords": ["english keyword 1", "english keyword 2", "english keyword 3", "english keyword 4", "english keyword 5"],
   "tags": ["#horror", "#creepypasta", "#darkstory", "#shorts"],
   "description": "Short SEO-friendly description about {topic}",

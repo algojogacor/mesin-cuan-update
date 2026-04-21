@@ -23,11 +23,14 @@ TARGET DURASI
 STRUKTUR BEAT WAJIB
 1. hook_line
    Kalimat pembuka paling keras dan paling bikin penonton berhenti scroll.
+   Sertakan juga hook_score dan hook_reason untuk menjelaskan kenapa hook ini kuat.
 2. anchor_line
    Kalimat kedua yang mengunci rasa penasaran dan membuat ancaman terasa dekat.
 3. body_beats
    Array 2-4 beat pendek. Setiap beat harus menaikkan intensitas.
-   Salah satu beat wajib jadi pattern interrupt yang benar-benar mengejutkan.
+   Salah satu beat wajib jadi pattern interrupt.
+   Pattern interrupt = fakta atau twist yang berlawanan arah dengan ekspektasi penonton dari beat sebelumnya.
+   Bukan sekadar "fakta mengejutkan", tapi harus membelokkan asumsi penonton.
 4. final_reveal
    Reveal terakhir sebelum CTA. Harus meninggalkan residu misteri.
 5. cta_line
@@ -45,6 +48,9 @@ ATURAN CTA
 - cta_plan.middle harus "visual_only"
 - cta_plan.end harus "strong_verbal"
 - cta_visual_text harus singkat, maksimal 6 kata, cocok untuk overlay akhir.
+- cta_visual_text HARUS dinamis sesuai kasus dan vibes topik.
+- Hindari default generik kalau ada opsi yang lebih tajam.
+- Contoh rasa: "KALAU BERANI LANJUT", "SIMPAN SEBELUM DIHAPUS", "BAGIAN GELAPNYA BESOK".
 
 MUSIC
 - music_mood harus salah satu dari:
@@ -54,11 +60,21 @@ MUSIC
 - music_keywords: 3-5 keyword English untuk membantu memilih track lokal terbaik.
 - music_arc: 2-3 beat pendek tentang alur energi musik dari opening ke ending.
 
+CREATIVE DIRECTION
+- creative_direction.thumbnail_text: 1-3 kata yang sangat tajam untuk thumbnail horror. Hindari kalimat panjang.
+- creative_direction.thumbnail_style: frasa pendek untuk arah packaging visual. Contoh: "forbidden evidence", "ritual panic", "archival dread", "possession shock".
+- creative_direction.opening_visual_priority: cue visual paling penting yang wajib terasa dominan di opening.
+- creative_direction.packaging_angle: angle emosional packaging. Contoh: "hidden cover-up", "cursed evidence", "disturbing proof".
+- Jangan ulang kata thumbnail yang terlalu generic dari video-video sebelumnya. Cari kata yang lebih tajam dan lebih khas untuk kasus ini.
+- Anda mungkin menerima blok Creative Memory dari video-video horror sebelumnya. Gunakan itu untuk menghindari pola hook, CTA, dan packaging yang terlalu mirip.
+
 OUTPUT HANYA JSON
 {
   "title": "Judul sangat tajam, memancing klik, dan bikin penasaran (maks 70 karakter)",
   "hook_type": "Satu label: stat_attack | conspiracy_reveal | historical_shock | body_horror | forbidden_record",
   "hook_line": "Kalimat pembuka paling keras",
+  "hook_score": 8,
+  "hook_reason": "Kenapa hook ini kuat untuk 0-3 detik",
   "anchor_line": "Kalimat pengunci retensi awal",
   "body_beats": [
     {"purpose": "escalation_1", "text": "Beat 1"},
@@ -73,11 +89,17 @@ OUTPUT HANYA JSON
     "middle": "visual_only",
     "end": "strong_verbal"
   },
-  "cta_visual_text": "SUBSCRIBE SEKARANG",
+  "cta_visual_text": "overlay CTA pendek yang sesuai vibes kasus",
   "music_mood": "dark intro",
   "music_direction": "short sentence about the best music feeling",
   "music_keywords": ["eerie", "ominous", "archival tension"],
   "music_arc": ["cold eerie opening", "rising possession tension", "dark unresolved ending"],
+  "creative_direction": {
+    "thumbnail_text": "TERLARANG",
+    "thumbnail_style": "forbidden evidence",
+    "opening_visual_priority": "sealed vatican archive folder close up",
+    "packaging_angle": "hidden cover-up"
+  },
   "keywords": ["english keyword 1", "english keyword 2", "english keyword 3", "english keyword 4", "english keyword 5"],
   "tags": ["#horor", "#creepypasta", "#kisahgelap", "#shorts"],
   "description": "Deskripsi singkat SEO-friendly tentang {topic}",
