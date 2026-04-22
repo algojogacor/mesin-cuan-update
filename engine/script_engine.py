@@ -31,10 +31,11 @@ from engine.utils import get_logger, require_env, load_prompt, timestamp, save_j
 from engine.hook_engine import inject_hook
 from engine.retention_engine import build_prompt_addon
 from engine.memory_engine import build_script_memory_addon
+from engine.research_engine import research_topic, build_research_addon
 
 logger = get_logger("script_engine")
 
-MIN_WORDS = {"shorts": 80, "long_form": 1300}
+MIN_WORDS = {"shorts": 90, "long_form": 1300}
 
 # Delay antar provider switch (detik)
 PROVIDER_SWITCH_DELAY = 60
@@ -104,6 +105,12 @@ def generate(topic_data: dict, channel: dict, profile: str = "shorts") -> dict:
 
     system_prompt = load_prompt(niche, language, profile=profile)
 
+    # ── BARU: Tambahkan instruksi COMMENT BAIT ──────────────────
+    if language == "id":
+        system_prompt += "\n\nWAJIB: Tambahkan field 'comment_bait' di dalam JSON output. Isinya adalah satu kalimat provokatif/pertanyaan di akhir video untuk memancing komentar penonton."
+    else:
+        system_prompt += "\n\nREQUIRED: Add a 'comment_bait' field in the JSON output. It should contain one provocative question or statement at the end of the video to encourage viewers to comment."
+
     # ── BARU: Tambahkan retention insights ke system prompt ──────────────────
     retention_addon = build_prompt_addon(channel)
     if retention_addon:
@@ -116,7 +123,25 @@ def generate(topic_data: dict, channel: dict, profile: str = "shorts") -> dict:
             system_prompt += memory_addon
             logger.info(f"[{ch_id}] Creative memory horror disertakan ke prompt")
 
-    # ── VIRAL ITERATION: Modifikasi user_message agar AI tahu ini Part 2 ────
+    # ── BARU: Web research untuk semua topik ──────────────────────────────
+    topic_source = topic_data.get("topic_source", "")
+    series_meta  = topic_data.get("series_meta", {})
+    part_number  = series_meta.get("part_number") if series_meta else None
+
+    # Terapkan web research selalu; if fail, research_topic gracefully returns empty
+    research_result = research_topic(topic, channel)
+    research_addon  = build_research_addon(research_result, language=language)
+    if research_addon:
+        system_prompt += research_addon
+        logger.info(f"[{ch_id}] Research context disertakan (via {research_result.get('provider', '?')})")
+
+    # ── BARU: Cliffhanger logic berbasis nomor Part ───────────────────────
+    # Part 1 normal → akhiri dengan gantung
+    # Part 2        → jawab tapi buka misteri baru
+    # Part 3+       → simpulkan, referensikan ke seri lain
+    part_instruction = _build_part_instruction(part_number, language, series_meta)
+
+    # ── VIRAL ITERATION: Modifikasi user_message ─────────────────────────
     if is_viral_iteration:
         if language == "id":
             continuation_hint = (
@@ -135,12 +160,14 @@ def generate(topic_data: dict, channel: dict, profile: str = "shorts") -> dict:
                 "Open by referencing Part 1 and immediately escalate the intensity."
             )
         user_message = (
-            f"Topik: {topic}{continuation_hint}"
+            f"Topik: {topic}{continuation_hint}{part_instruction}"
             if language == "id"
-            else f"Topic: {topic}{continuation_hint}"
+            else f"Topic: {topic}{continuation_hint}{part_instruction}"
         )
     else:
-        user_message = f"Topik: {topic}" if language == "id" else f"Topic: {topic}"
+        prefix = "Topik" if language == "id" else "Topic"
+        user_message = f"{prefix}: {topic}{part_instruction}"
+
 
     # ── Dual Parallel Generation + Cross-Provider Scoring ──────────────────
     result = _generate_and_pick_best(system_prompt, user_message, profile, ch_id)
@@ -149,9 +176,10 @@ def generate(topic_data: dict, channel: dict, profile: str = "shorts") -> dict:
         logger.info(f"[{ch_id}] Parallel scorer tidak menghasilkan winner → fallback ke sequential")
         result = _call_ai(system_prompt, user_message, profile=profile)
     result["topic"]              = topic
-    result["profile"]            = profile  # Penting untuk hook_engine agar tahu target field
-    result["is_viral_iteration"] = is_viral_iteration  # Forward metadata ke output JSON
+    result["profile"]            = profile
+    result["is_viral_iteration"] = is_viral_iteration
     result["topic_source"]       = topic_data.get("topic_source", "unknown")
+    result["series_meta"]        = topic_data.get("series_meta", {})
 
     # ── BARU: Inject hook di awal narasi ────────────────────────────────────
     result = inject_hook(result, channel)
@@ -354,7 +382,6 @@ def _call_ollama(system_prompt: str, user_message: str, profile: str) -> dict:
                 "top_p":          0.95,
                 "top_k":          50,
                 "repeat_penalty": 1.15,
-                "num_predict":    max_tokens,
                 "num_ctx":        16384,
                 "seed":           -1,   # -1 = random, variasi antar video
             },
@@ -395,7 +422,9 @@ def _call_ollama(system_prompt: str, user_message: str, profile: str) -> dict:
 def _call_qwen(system_prompt: str, user_message: str, profile: str) -> dict:
     max_tokens = SCRIPT_MAX_TOKENS_LONGFORM if profile == "long_form" else SCRIPT_MAX_TOKENS_SHORTS
     api_key = require_env("QWEN_API_KEY")
-    max_attempts = 2 if profile == "shorts" else MAX_JSON_RETRY
+    # Timeout dinaikkan ke 600s karena Qwen proxy bisa lambat
+    qwen_timeout = int(os.environ.get("QWEN_TIMEOUT", "600"))
+    max_attempts = 3 if profile == "shorts" else MAX_JSON_RETRY
 
     system_with_json = (
         system_prompt +
@@ -431,9 +460,8 @@ def _call_qwen(system_prompt: str, user_message: str, profile: str) -> dict:
                         "temperature":       max(0.5, 0.90 - (attempt - 1) * 0.10),
                         "top_p":             0.95,
                         "frequency_penalty": 0.35,  # ~repeat_penalty 1.15 di Ollama
-                        "max_tokens":        max_tokens,
                     },
-                    timeout=300,
+                    timeout=qwen_timeout,  # 600s untuk proxy latency
                 )
                 resp.raise_for_status()
             except requests.HTTPError as exc:
@@ -492,7 +520,6 @@ def _call_groq(system_prompt: str, user_message: str, profile: str) -> dict:
                     {"role": "user",   "content": user_msg},
                 ],
                 response_format={"type": "json_object"},
-                max_tokens=max_tokens,
                 temperature=max(0.3, 0.7 - (attempt - 1) * 0.2),
             )
             raw = resp.choices[0].message.content.strip()
@@ -562,7 +589,7 @@ def _call_anthropic(system_prompt: str, user_message: str, profile: str) -> dict
         try:
             msg = client.messages.create(
                 model="claude-haiku-4-5-20251001",
-                max_tokens=max_tokens,
+                max_tokens=8192,
                 system=system_prompt,
                 messages=[{"role": "user", "content": user_msg}],
             )
@@ -577,6 +604,32 @@ def _call_anthropic(system_prompt: str, user_message: str, profile: str) -> dict
 
 
 # ─── JSON Parser (berlapis) ───────────────────────────────────────────────────
+
+def _clean_encoding(text: str) -> str:
+    """
+    Hapus karakter replacement/artefak encoding yang sering muncul dari output
+    Ollama/DeepSeek (\ufffd, \u00ef\u00bf\u00bd, dan variasi UTF-8 BOM).
+    Juga normalkan em-dash dan ellipsis agar TTS tidak tersedak.
+    """
+    if not text:
+        return text
+    # Hapus replacement character dan variasinya
+    text = text.replace('\ufffd', '')          # U+FFFD REPLACEMENT CHARACTER
+    text = text.replace('\u00ef\u00bf\u00bd', '')  # UTF-8 bytes mis-decoded
+    text = text.replace('\ufeff', '')          # BOM
+    # Normalkan em-dash → biasa
+    text = text.replace('\u2014', ' - ').replace('\u2013', '-')
+    # Hapus karakter kontrol non-printable (kecuali newline/tab)
+    import unicodedata
+    cleaned = ''.join(
+        ch for ch in text
+        if unicodedata.category(ch)[0] != 'C' or ch in ('\n', '\t', '\r')
+    )
+    # Collapse spasi berganda
+    import re as _re
+    cleaned = _re.sub(r'  +', ' ', cleaned)
+    return cleaned.strip()
+
 
 def _clean_raw_json(raw: str) -> str:
     """
@@ -737,6 +790,24 @@ def _validate_and_fix(data: dict, profile: str) -> dict:
                     logger.warning("Auto-fix: description diisi dari title")
                 else:
                     raise ValueError(f"Shorts missing required field: '{field}'")
+
+        # Bersihkan karakter aneh dari semua field teks
+        for field in ("script", "hook_line", "anchor_line", "final_reveal", "cta_line",
+                      "title", "description", "comment_bait"):
+            if isinstance(data.get(field), str):
+                data[field] = _clean_encoding(data[field])
+        # Bersihkan body_beats jika ada
+        if isinstance(data.get("body_beats"), list):
+            cleaned_beats = []
+            for beat in data["body_beats"]:
+                if isinstance(beat, dict):
+                    for k, v in beat.items():
+                        if isinstance(v, str):
+                            beat[k] = _clean_encoding(v)
+                    cleaned_beats.append(beat)
+                elif isinstance(beat, str):
+                    cleaned_beats.append(_clean_encoding(beat))
+            data["body_beats"] = cleaned_beats
 
         word_count = len(data.get("script", "").split())
         if word_count < MIN_WORDS["shorts"]:
@@ -1291,3 +1362,82 @@ def _merge_reviewed_script(original: dict, updated: dict, profile: str) -> dict:
 
     merged = _normalize_shorts_schema(merged)
     return _validate_and_fix(merged, profile)
+
+
+def _build_part_instruction(
+    part_number: int | None,
+    language: str,
+    series_meta: dict | None,
+) -> str:
+    """
+    Buat instruksi khusus berdasarkan nomor Part untuk series konten.
+
+    - part_number = None / 1 → Part 1 normal, akhiri dengan CLIFFHANGER
+    - part_number = 2        → Jawab cliffhanger Part 1, BUKA misteri baru
+    - part_number >= 3       → Simpulkan seri, referensikan episode lain
+
+    Return: string instruksi yang di-append ke user_message.
+    """
+    if not part_number or part_number < 1:
+        # Part 1 — Akhiri dengan cliffhanger untuk dorong Part 2
+        if language == "id":
+            return (
+                "\n\n[INSTRUKSI SERI — Part 1]"
+                "\nIni adalah EPISODE PERTAMA dari seri ini. "
+                "WAJIB akhiri video dengan CLIFFHANGER kuat — gantungkan satu misteri besar yang belum terjawab. "
+                "CTA harus memancing penonton untuk menunggu Part 2. "
+                "Contoh akhir: 'Tapi ada satu hal yang tidak pernah diceritakan... dan itu jauh lebih gelap.' "
+                "Jangan beri jawaban di akhir — beri pertanyaan yang membuat penonton tidak bisa tidur."
+            )
+        return (
+            "\n\n[SERIES INSTRUCTION — Part 1]"
+            "\nThis is the FIRST EPISODE of this series. "
+            "MUST end with a strong CLIFFHANGER — leave one big unanswered mystery. "
+            "CTA must tease Part 2. "
+            "Example ending: 'But there's one thing they never told you... and it's far darker.' "
+            "Do NOT give the answer — ask the question that haunts them."
+        )
+
+    if part_number == 2:
+        if language == "id":
+            return (
+                "\n\n[INSTRUKSI SERI — Part 2]"
+                "\nIni adalah KELANJUTAN dari Part 1. "
+                "Buka dengan JAWABAN cliffhanger Part 1 dalam 5 detik pertama — penonton sudah menunggu ini. "
+                "Setelah menjawab, UNGKAP layer misteri yang lebih dalam dan lebih gelap. "
+                "Akhiri dengan membuka SATU MISTERI BARU yang lebih mengejutkan dari Part 1. "
+                "Struktur: Jawab → Eskalasi → Buka Pintu Selanjutnya. "
+                "CTA bisa mereferensikan seri lain di channel atau pertanyaan komunitas."
+            )
+        return (
+            "\n\n[SERIES INSTRUCTION — Part 2]"
+            "\nThis is the CONTINUATION from Part 1. "
+            "Open with the ANSWER to Part 1's cliffhanger within 5 seconds — viewers have been waiting. "
+            "After answering, REVEAL a deeper, darker layer of mystery. "
+            "End by opening ONE NEW MYSTERY even more shocking than Part 1. "
+            "Structure: Answer → Escalate → Open Next Door. "
+            "CTA can reference other series or community questions."
+        )
+
+    # Part 3+: Simpulkan dan arahkan ke seri lain
+    series_name = (series_meta or {}).get("series_name", "") if series_meta else ""
+    if language == "id":
+        ref = f" '{series_name}'" if series_name else " seri ini"
+        return (
+            f"\n\n[INSTRUKSI SERI — Part {part_number}]"
+            f"\nIni adalah EPISODE LANJUTAN{ref}. "
+            "Berikan KESIMPULAN dari semua benang misteri yang sudah dibuka di Part sebelumnya. "
+            "Di bagian akhir, referensikan bahwa masih ada episode lain di seri ini yang bisa ditonton. "
+            "Buat penutup yang memuaskan tapi tetap menyisakan rasa ingin tahu yang mendorong eksplorasi lebih lanjut. "
+            "CTA kuat: ajak penonton untuk nonton episode lain, subscribe, dan aktifkan notifikasi."
+        )
+    ref = f" '{series_name}'" if series_name else " this series"
+    return (
+        f"\n\n[SERIES INSTRUCTION — Part {part_number}]"
+        f"\nThis is a CONTINUATION episode of{ref}. "
+        "Provide a CONCLUSION that ties together the threads opened in previous parts. "
+        "At the end, reference other episodes in this series. "
+        "Create a satisfying closing that still leaves curiosity — driving further exploration. "
+        "Strong CTA: watch other episodes, subscribe, turn on notifications."
+    )
+

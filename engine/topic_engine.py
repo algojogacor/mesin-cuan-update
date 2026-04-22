@@ -7,6 +7,8 @@ Upgrade:
   - Memakai selector yang mempertimbangkan novelty, retention hints,
     recent history, dan source quality.
   - Menyimpan debug pemilihan topik agar gampang diaudit.
+  - [NEW] Manual override via topic_overrides.json (prioritas tertinggi).
+  - [NEW] Series episode otomatis dari series_catalog (prioritas kedua).
 """
 
 import json
@@ -166,19 +168,39 @@ def generate(channel: dict, profile: str = "shorts") -> dict:
     recent_topics = _recent_non_iterated_topics(used_topics, TOPIC_RECENT_WINDOW)
     hint_topics = get_topic_hints(channel)
 
-    viral_topic = _get_viral_iteration(channel, used_topics)
-    if viral_topic:
+    # Extra metadata dari override/series untuk diteruskan ke script_engine
+    series_meta: dict = {}
+    candidate_debug = []
+
+    # ── PRIORITAS 1: Manual override dari topic_overrides.json ──────────────
+    override = _pop_next_override(ch_id)
+    if override:
+        topic = override["topic"]
+        topic_source = "manual_override"
+        is_viral_iteration = bool(override.get("part_number") == 2)
+        series_meta = {
+            "series_name": override.get("series_name"),
+            "series_item": override.get("series_item"),
+            "part_number": override.get("part_number"),
+            "original_title": override.get("original_title"),
+        }
+        used_topics.append(topic)
+        logger.info(f"[{ch_id}] 🎯 Manual Override: {topic}")
+
+    # ── PRIORITAS 2: Viral iteration dari video viral (sudah ada sebelumnya) ─
+    elif (viral_topic := _get_viral_iteration(channel, used_topics)):
         topic = viral_topic
         topic_source = "viral_iteration"
         is_viral_iteration = True
         used_topics.append(f"{_ITERATED_MARKER}{viral_topic}")
         logger.info(f"[{ch_id}] Pakai Viral Iteration topic")
-        candidate_debug = []
+
+    # ── PRIORITAS 3: AI / Trending / Seed (flow lama) ──────────────────────
     else:
         seed_topics = SEED_TOPICS.get(niche, {}).get(language, [])
-        fresh_seed = [topic for topic in seed_topics if topic not in used_topics]
+        fresh_seed = [t for t in seed_topics if t not in used_topics]
         trending = get_trending_topics(niche, language, channel_id=ch_id, limit=10)
-        fresh_trending = [topic for topic in trending if topic not in used_topics]
+        fresh_trending = [t for t in trending if t not in used_topics]
         ai_topics = _generate_candidates_via_ai(
             niche,
             language,
@@ -205,7 +227,6 @@ def generate(channel: dict, profile: str = "shorts") -> dict:
         else:
             topic = _generate_via_ai(niche, language, hints={"best_topics": hint_topics})
             topic_source = "ai_fallback"
-            candidate_debug = []
 
         used_topics.append(topic)
 
@@ -221,6 +242,7 @@ def generate(channel: dict, profile: str = "shorts") -> dict:
             "topic_source": topic_source,
             "profile": profile,
             "is_viral_iteration": is_viral_iteration,
+            "series_meta": series_meta,
             "recent_topics": recent_topics[:10],
             "hint_topics": hint_topics[:5],
             "top_candidates": candidate_debug,
@@ -234,6 +256,7 @@ def generate(channel: dict, profile: str = "shorts") -> dict:
         "language": language,
         "is_viral_iteration": is_viral_iteration,
         "topic_source": topic_source,
+        "series_meta": series_meta,
     }
 
 
@@ -269,6 +292,65 @@ def _generate_candidates_via_ai(niche: str, language: str, hints=None,
         f"{hints_text}"
     )
 
+    # ── PRIORITAS 1: Qwen ─────────────────────────────────────────────────────
+    if os.getenv("QWEN_API_KEY"):
+        _sess = requests.Session()
+        _sess.trust_env = False
+        try:
+            qwen_timeout = int(os.environ.get("QWEN_TIMEOUT", "600"))
+            resp = _sess.post(
+                f"{QWEN_API_BASE.rstrip('/')}/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {os.getenv('QWEN_API_KEY', '')}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": QWEN_MODEL,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "temperature": 0.85,
+                    "top_p": 0.95,
+                    "frequency_penalty": 0.20,
+                    "max_tokens": 400,
+                },
+                timeout=qwen_timeout,
+            )
+            resp.raise_for_status()
+            raw = resp.json()["choices"][0]["message"]["content"].strip()
+            cleaned = raw.replace("```json", "").replace("```", "").strip()
+            return _clean_topic_list(json.loads(cleaned))
+        except Exception as exc:
+            logger.warning(f"Qwen topic failed: {exc} -> trying Ollama...")
+        finally:
+            _sess.close()
+
+    # ── PRIORITAS 2: Ollama (DeepSeek) ────────────────────────────────────────
+    try:
+        resp = requests.post(
+            f"{OLLAMA_BASE_URL}/api/chat",
+            json={
+                "model": OLLAMA_MODEL,
+                "messages": [{"role": "user", "content": prompt}],
+                "stream": False,
+                "format": "json",
+                "options": {
+                    "temperature": 0.85,
+                    "top_p": 0.95,
+                    "top_k": 40,
+                    "repeat_penalty": 1.1,
+                    "num_predict": 400,
+                    "num_ctx": 4096,
+                },
+            },
+            timeout=120,
+        )
+        resp.raise_for_status()
+        raw = resp.json().get("message", {}).get("content", "").strip()
+        cleaned = raw.replace("```json", "").replace("```", "").strip()
+        return _clean_topic_list(json.loads(cleaned))
+    except Exception as exc:
+        logger.warning(f"Ollama topic failed: {exc} -> trying Groq...")
+
+    # ── FALLBACK: Groq ────────────────────────────────────────────────────────
     try:
         from groq import Groq
 
@@ -276,16 +358,16 @@ def _generate_candidates_via_ai(niche: str, language: str, hints=None,
         resp = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[{"role": "user", "content": prompt}],
-            # Candidate generator: high creativity
             temperature=0.90,
             top_p=0.95,
-            frequency_penalty=0.25,  # ~repeat_penalty 1.1
+            frequency_penalty=0.25,
             max_tokens=300,
         )
         return _clean_topic_list(json.loads(resp.choices[0].message.content.strip()))
     except Exception as exc:
         logger.warning(f"Groq topic failed: {exc} -> trying Gemini...")
 
+    # ── FALLBACK: Gemini ──────────────────────────────────────────────────────
     try:
         import google.generativeai as genai
 
@@ -296,6 +378,7 @@ def _generate_candidates_via_ai(niche: str, language: str, hints=None,
     except Exception as exc:
         logger.warning(f"Gemini topic failed: {exc} -> trying Anthropic...")
 
+    # ── FALLBACK: Anthropic ───────────────────────────────────────────────────
     try:
         import anthropic
 
@@ -593,8 +676,58 @@ def _parse_selector_json(raw: str) -> dict:
 
 
 def _save_topic_debug(channel_id: str, payload: dict) -> None:
-    debug_path = channel_data_path(channel_id, f"topics/topic_selector_{timestamp()}.json")
+    # channel_data_path mengembalikan FOLDER, bukan file path.
+    # Bangun path file secara eksplisit agar tidak terjadi PermissionError.
+    debug_dir = os.path.join("data", channel_id, "topics")
+    os.makedirs(debug_dir, exist_ok=True)
+    debug_file = os.path.join(debug_dir, f"topic_selector_{timestamp()}.json")
     try:
-        save_json(payload, debug_path)
+        save_json(payload, debug_file)
     except Exception as exc:
         logger.debug(f"[{channel_id}] Gagal simpan topic debug: {exc}")
+
+
+def _pop_next_override(ch_id: str) -> dict | None:
+    """
+    Ambil override pertama yang belum dipakai dari topic_overrides.json.
+    Mark sebagai 'used: true' setelah diambil.
+    Return None jika tidak ada override pending.
+    """
+    overrides_dir = f"data/{ch_id}"
+    os.makedirs(overrides_dir, exist_ok=True)
+    overrides_path = os.path.join(overrides_dir, "topic_overrides.json")
+    
+    if not os.path.exists(overrides_path):
+        return None
+
+    try:
+        with open(overrides_path, "r", encoding="utf-8") as f:
+            overrides = json.load(f)
+        if not isinstance(overrides, list):
+            return None
+    except Exception as exc:
+        logger.warning(f"[{ch_id}] Gagal baca topic_overrides.json: {exc}")
+        return None
+
+    # Cari entry pertama yang belum dipakai
+    picked = None
+    for entry in overrides:
+        if not entry.get("used", False):
+            picked = entry
+            break
+
+    if not picked:
+        return None
+
+    # Mark sebagai used
+    picked["used"] = True
+    picked["used_at"] = datetime.now().isoformat()
+
+    try:
+        with open(overrides_path, "w", encoding="utf-8") as f:
+            json.dump(overrides, f, ensure_ascii=False, indent=2)
+        logger.info(f"[{ch_id}] Override dikonsumsi: '{picked['topic'][:60]}'")
+    except Exception as exc:
+        logger.warning(f"[{ch_id}] Gagal update topic_overrides.json: {exc}")
+
+    return picked
