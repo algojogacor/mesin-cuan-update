@@ -28,7 +28,7 @@ QWEN_MODEL_CANDIDATES = [
     ).split(",")
     if m.strip()
 ]
-HOOK_MIN_SCORE = float(os.environ.get("HOOK_MIN_SCORE", "8.4"))
+HOOK_MIN_SCORE = float(os.environ.get("HOOK_MIN_SCORE", "8.7"))
 
 HOOK_TEMPLATES = {
     "horror_facts": {

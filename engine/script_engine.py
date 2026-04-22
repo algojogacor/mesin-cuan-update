@@ -56,7 +56,7 @@ QWEN_MODEL_CANDIDATES = [
     if m.strip()
 ]
 
-SHORTS_REVIEW_MIN_SCORE = float(os.environ.get("SHORTS_REVIEW_MIN_SCORE", "8.4"))
+SHORTS_REVIEW_MIN_SCORE = float(os.environ.get("SHORTS_REVIEW_MIN_SCORE", "9.2"))
 SHORTS_REVIEW_MAX_PASSES = 2
 SCRIPT_MAX_TOKENS_SHORTS = int(os.environ.get("SCRIPT_MAX_TOKENS_SHORTS", "2400"))
 SCRIPT_MAX_TOKENS_LONGFORM = int(os.environ.get("SCRIPT_MAX_TOKENS_LONGFORM", "7000"))
@@ -65,7 +65,7 @@ SCRIPT_REVIEW_MAX_TOKENS = int(os.environ.get("SCRIPT_REVIEW_MAX_TOKENS", "3200"
 # ── Script Quality Scorer (parallel gate) ────────────────────────────────────
 # Threshold: jika max(score_A, score_B) >= ini → langsung lanjut
 # Jika di bawah threshold → fallback ke sequential waterfall
-SCRIPT_QUALITY_THRESHOLD = float(os.environ.get("SCRIPT_QUALITY_THRESHOLD", "7.8"))
+SCRIPT_QUALITY_THRESHOLD = float(os.environ.get("SCRIPT_QUALITY_THRESHOLD", "8.2"))
 
 # Timeout untuk parallel generation (detik)
 PARALLEL_TIMEOUT = 600
@@ -104,6 +104,12 @@ def generate(topic_data: dict, channel: dict, profile: str = "shorts") -> dict:
         logger.info(f"[{ch_id}] 🔁 Mode Viral Iteration aktif — sisipkan instruksi Part 2")
 
     system_prompt = load_prompt(niche, language, profile=profile)
+
+    # Paksa bahasa output sesuai channel language
+    if language == "id":
+        system_prompt += "\n\nWAJIB: Seluruh narasi video HARUS dalam Bahasa Indonesia."
+    else:
+        system_prompt += "\n\nMANDATORY: The entire video narration MUST be written in English only. Do NOT mix with any other language, even if the topic contains non-English words."
 
     # ── BARU: Tambahkan instruksi COMMENT BAIT ──────────────────
     if language == "id":
@@ -170,7 +176,7 @@ def generate(topic_data: dict, channel: dict, profile: str = "shorts") -> dict:
 
 
     # ── Dual Parallel Generation + Cross-Provider Scoring ──────────────────
-    result = _generate_and_pick_best(system_prompt, user_message, profile, ch_id)
+    result = _generate_and_pick_best(system_prompt, user_message, profile, ch_id, channel=channel)
     if result is None:
         # Fallback: sequential waterfall (existing behavior, tidak ada perubahan)
         logger.info(f"[{ch_id}] Parallel scorer tidak menghasilkan winner → fallback ke sequential")
@@ -223,10 +229,9 @@ def _call_ai(system_prompt: str, user_message: str, profile: str = "shorts") -> 
         primary_providers.append(("Qwen", lambda: _call_qwen(system_prompt, user_message, profile)))
     random.shuffle(primary_providers)
 
+    # Groq sebagai last-resort fallback saja; Gemini & Anthropic dihapus
     providers = primary_providers + [
-        ("Groq",            lambda: _call_groq(system_prompt, user_message, profile)),
-        ("Gemini",          lambda: _call_gemini(system_prompt, user_message, profile)),
-        ("Anthropic",       lambda: _call_anthropic(system_prompt, user_message, profile)),
+        ("Groq", lambda: _call_groq(system_prompt, user_message, profile)),
     ]
 
     last_error = None
@@ -239,7 +244,7 @@ def _call_ai(system_prompt: str, user_message: str, profile: str = "shorts") -> 
         except Exception as e:
             last_error = e
             logger.warning(f"❌ {name} gagal: {e}")
-            if name not in ("Anthropic", "DeepSeek/Ollama", "Qwen"):
+            if name not in ("DeepSeek/Ollama", "Qwen"):
                 logger.info(f"Tunggu {PROVIDER_SWITCH_DELAY}s sebelum provider berikutnya...")
                 time.sleep(PROVIDER_SWITCH_DELAY)
 
@@ -248,22 +253,29 @@ def _call_ai(system_prompt: str, user_message: str, profile: str = "shorts") -> 
 
 # ─── Dual Parallel Generation + Cross-Provider Scoring ───────────────────────
 
+# Maksimal retry parallel jika skor di bawah threshold
+PARALLEL_MAX_RETRIES = 3
+
+
 def _generate_and_pick_best(
     system_prompt: str,
     user_message: str,
     profile: str,
     ch_id: str,
+    channel: dict | None = None,
 ) -> dict | None:
     """
     Generate script dengan dua model secara paralel, lalu cross-score hasilnya.
+    Jika skor di bawah threshold, ulangi hingga PARALLEL_MAX_RETRIES kali.
+    Kembalikan script dengan skor tertinggi dari semua percobaan.
 
     Strategi anti-sycophancy:
       Generator Qwen   → di-score oleh Ollama
       Generator Ollama → di-score oleh Qwen
 
     Return:
-      dict  — script terbaik (score >= SCRIPT_QUALITY_THRESHOLD)
-      None  — signal agar caller fallback ke _call_ai() sequential
+      dict  — script terbaik setelah semua retry (bisa di bawah threshold)
+      None  — signal agar caller fallback ke _call_ai() jika kedua generator gagal
     """
     from engine.script_quality_scorer import score_script
 
@@ -272,78 +284,102 @@ def _generate_and_pick_best(
         logger.info(f"[{ch_id}] QWEN_API_KEY tidak ada — skip parallel, gunakan sequential")
         return None
 
-    logger.info(f"[{ch_id}] ⚡ Parallel generation: Qwen + Ollama ...")
-
-    # ── Step 1: Generate paralel ─────────────────────────────────────────────
-    generator_results: dict[str, dict | Exception] = {}
-    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-        futures = {
-            "qwen":   executor.submit(_call_qwen,  system_prompt, user_message, profile),
-            "ollama": executor.submit(_call_ollama, system_prompt, user_message, profile),
-        }
-        for generator, future in futures.items():
-            try:
-                generator_results[generator] = future.result(timeout=PARALLEL_TIMEOUT)
-                logger.info(f"[{ch_id}] [parallel] ✅ {generator} selesai generate")
-            except concurrent.futures.TimeoutError:
-                logger.warning(f"[{ch_id}] [parallel] ⚠️  {generator} timeout")
-            except Exception as exc:
-                logger.warning(f"[{ch_id}] [parallel] ❌ {generator} gagal: {exc}")
-
-    successful = {k: v for k, v in generator_results.items() if isinstance(v, dict)}
-    if not successful:
-        logger.warning(f"[{ch_id}] Kedua generator gagal — fallback ke sequential")
-        return None
-
-    # ── Step 2: Cross-score (anti-sycophancy) ────────────────────────────────
-    # Qwen output  → dinilai Ollama
-    # Ollama output → dinilai Qwen
     CROSS_SCORER = {"qwen": "ollama", "ollama": "qwen"}
 
-    scored: list[tuple[float, str, dict, dict]] = []
-    for generator, script_data in successful.items():
-        scorer_provider = CROSS_SCORER[generator]
-        try:
-            quality = score_script(
-                script_data,
-                profile=profile,
-                scorer_provider=scorer_provider,
-            )
-            overall = quality.get("overall", 0.0)
-            scored.append((overall, generator, script_data, quality))
+    # Simpan skor terbaik lintas semua percobaan
+    best_score_ever: float = -1.0
+    best_script_ever: dict | None = None
+
+    for attempt in range(1, PARALLEL_MAX_RETRIES + 1):
+        logger.info(f"[{ch_id}] ⚡ Parallel generation attempt {attempt}/{PARALLEL_MAX_RETRIES}: Qwen + Ollama ...")
+
+        # ── Step 1: Generate paralel ─────────────────────────────────────────
+        generator_results: dict[str, dict | Exception] = {}
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            futures = {
+                "qwen":   executor.submit(_call_qwen,  system_prompt, user_message, profile),
+                "ollama": executor.submit(_call_ollama, system_prompt, user_message, profile),
+            }
+            for generator, future in futures.items():
+                try:
+                    generator_results[generator] = future.result(timeout=PARALLEL_TIMEOUT)
+                    logger.info(f"[{ch_id}] [parallel] ✅ {generator} selesai generate")
+                except concurrent.futures.TimeoutError:
+                    logger.warning(f"[{ch_id}] [parallel] ⚠️  {generator} timeout")
+                except Exception as exc:
+                    logger.warning(f"[{ch_id}] [parallel] ❌ {generator} gagal: {exc}")
+
+        successful = {k: v for k, v in generator_results.items() if isinstance(v, dict)}
+        if not successful:
+            logger.warning(f"[{ch_id}] Attempt {attempt}: kedua generator gagal")
+            if attempt == PARALLEL_MAX_RETRIES:
+                break
+            continue
+
+        # ── Step 2: Cross-score (anti-sycophancy) ────────────────────────────
+        scored: list[tuple[float, str, dict, dict]] = []
+        for generator, script_data in successful.items():
+            scorer_provider = CROSS_SCORER[generator]
+            try:
+                quality = score_script(
+                    script_data,
+                    profile=profile,
+                    scorer_provider=scorer_provider,
+                    channel=channel,
+                )
+                overall = quality.get("overall", 0.0)
+                scored.append((overall, generator, script_data, quality))
+                logger.info(
+                    f"[{ch_id}] [scorer] {generator} → dinilai {scorer_provider}: "
+                    f"{overall:.1f} ({quality.get('verdict', '?')}) | "
+                    f"hook={quality.get('hook_strength')} curiosity={quality.get('curiosity_gap')}"
+                )
+            except Exception as exc:
+                logger.warning(
+                    f"[{ch_id}] [scorer] Scoring {generator} gagal: {exc} — skor fallback 5.0"
+                )
+                scored.append((5.0, generator, script_data, {"overall": 5.0, "verdict": "SCORE_FAILED"}))
+
+        if not scored:
+            logger.warning(f"[{ch_id}] Attempt {attempt}: semua scoring gagal")
+            continue
+
+        # ── Step 3: Cek skor terbaik attempt ini ─────────────────────────────
+        scored.sort(key=lambda x: x[0], reverse=True)
+        attempt_score, attempt_generator, attempt_script, attempt_quality = scored[0]
+        attempt_script["quality_score"] = attempt_quality
+
+        if attempt_score > best_score_ever:
+            best_score_ever  = attempt_score
+            best_script_ever = attempt_script
             logger.info(
-                f"[{ch_id}] [scorer] {generator} → dinilai {scorer_provider}: "
-                f"{overall:.1f} ({quality.get('verdict', '?')}) | "
-                f"hook={quality.get('hook_strength')} curiosity={quality.get('curiosity_gap')}"
+                f"[{ch_id}] 🏆 New best: {attempt_generator} score={attempt_score:.1f} "
+                f"(attempt {attempt}/{PARALLEL_MAX_RETRIES})"
             )
-        except Exception as exc:
-            logger.warning(
-                f"[{ch_id}] [scorer] Scoring {generator} gagal: {exc} — skor fallback 5.0"
+
+        if attempt_score >= SCRIPT_QUALITY_THRESHOLD:
+            logger.info(
+                f"[{ch_id}] ✅ Parallel winner: {attempt_generator} "
+                f"(score={attempt_score:.1f} >= threshold={SCRIPT_QUALITY_THRESHOLD}) "
+                f"setelah {attempt} percobaan"
             )
-            scored.append((5.0, generator, script_data, {"overall": 5.0, "verdict": "SCORE_FAILED"}))
+            return best_script_ever
 
-    if not scored:
-        logger.warning(f"[{ch_id}] Semua scoring gagal — fallback ke sequential")
-        return None
-
-    # ── Step 3: Pilih winner ─────────────────────────────────────────────────
-    scored.sort(key=lambda x: x[0], reverse=True)
-    best_score, best_generator, best_script, best_quality = scored[0]
-
-    # Attach quality metadata untuk debug/audit (tersimpan di script JSON)
-    best_script["quality_score"] = best_quality
-
-    if best_score >= SCRIPT_QUALITY_THRESHOLD:
         logger.info(
-            f"[{ch_id}] ✅ Parallel winner: {best_generator} "
-            f"(score={best_score:.1f} >= threshold={SCRIPT_QUALITY_THRESHOLD})"
+            f"[{ch_id}] ⚠️  Attempt {attempt}: score={attempt_score:.1f} < threshold={SCRIPT_QUALITY_THRESHOLD} "
+            + (f"— retry..." if attempt < PARALLEL_MAX_RETRIES else "— semua retry habis")
         )
-        return best_script
 
-    logger.info(
-        f"[{ch_id}] ⚠️  Best parallel score {best_score:.1f} < threshold {SCRIPT_QUALITY_THRESHOLD} "
-        f"— fallback ke sequential waterfall"
-    )
+    # Setelah semua retry habis: kembalikan script terbaik yang pernah didapat
+    if best_script_ever is not None:
+        logger.info(
+            f"[{ch_id}] 📋 Menggunakan hasil terbaik dari {PARALLEL_MAX_RETRIES} percobaan: "
+            f"score={best_score_ever:.1f} (di bawah threshold={SCRIPT_QUALITY_THRESHOLD})"
+        )
+        return best_script_ever
+
+    # Fallback ke sequential jika sama sekali tidak ada hasil
+    logger.warning(f"[{ch_id}] Semua parallel attempt gagal total — fallback ke sequential")
     return None
 
 
@@ -1165,10 +1201,12 @@ def review_and_iterate(script_data: dict, channel: dict, profile: str = "shorts"
 
 def _review_script_payload(script_data: dict, channel: dict, threshold: float, mode: str) -> dict:
     prompt = _build_review_prompt(script_data, channel, threshold, mode)
-    providers = ["DeepSeek/Ollama", "Groq"]
+    # Primary: Ollama + Qwen (anti-sycophancy). Groq sebagai last-resort.
+    primary_reviewers = ["DeepSeek/Ollama"]
     if os.getenv("QWEN_API_KEY"):
-        providers.append("Qwen")
-    random.shuffle(providers)
+        primary_reviewers.append("Qwen")
+    random.shuffle(primary_reviewers)
+    providers = primary_reviewers + ["Groq"]
 
     last_error = None
     for provider in providers:
@@ -1177,6 +1215,7 @@ def _review_script_payload(script_data: dict, channel: dict, threshold: float, m
             data = _clean_raw_json(raw)
             review = json.loads(data)
             review["provider"] = provider
+            logger.info(f"[{channel.get('id','?')}] [reviewer] Provider: {provider} | score: {review.get('score','?')}")
             return review
         except Exception as exc:
             last_error = exc

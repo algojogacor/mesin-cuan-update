@@ -48,7 +48,7 @@ QWEN_MODEL_CANDIDATES = [
     if m.strip()
 ]
 
-QUALITY_THRESHOLD = float(os.environ.get("SCRIPT_QUALITY_THRESHOLD", "7.8"))
+QUALITY_THRESHOLD = float(os.environ.get("SCRIPT_QUALITY_THRESHOLD", "8.2"))
 
 # Max tokens for scorer (evaluation is lighter than generation)
 SCORER_MAX_TOKENS = 512
@@ -70,6 +70,7 @@ def score_script(
     script_data: dict,
     profile: str = "shorts",
     scorer_provider: str = "ollama",
+    channel: dict | None = None,
 ) -> dict:
     """
     Score a script dict with an explicit provider (cross-provider scoring).
@@ -79,6 +80,7 @@ def score_script(
         profile:          "shorts" | "long_form"
         scorer_provider:  "qwen" | "ollama" — which model evaluates this script
                           Should be the OPPOSITE of the generator.
+        channel:          Channel dict (for niche/language context). Optional.
 
     Returns:
         {
@@ -101,7 +103,7 @@ def score_script(
         logger.warning("[scorer] Narasi kosong, tidak bisa di-score")
         return _fallback_score(scorer_provider, reason="empty_narration")
 
-    prompt = _build_scoring_prompt(narration, profile, script_data)
+    prompt = _build_scoring_prompt(narration, profile, script_data, channel=channel)
 
     # Provider waterfall (order depends on scorer_provider argument)
     provider_order = _build_provider_order(scorer_provider)
@@ -127,13 +129,19 @@ def score_script(
 
 # ─── Prompt Builder ───────────────────────────────────────────────────────────
 
-def _build_scoring_prompt(narration: str, profile: str, script_data: dict) -> str:
+def _build_scoring_prompt(narration: str, profile: str, script_data: dict, channel: dict | None = None) -> str:
     """
     Build a lightweight evaluation prompt.
     We pass the narration text + title, NOT the full script JSON,
     to keep token cost minimal.
     """
-    title    = str(script_data.get("title", "")).strip()
+    # ── Konteks niche & bahasa ────────────────────────────────────────────────
+    niche      = (channel or {}).get("niche", script_data.get("niche", "horror_facts"))
+    language   = (channel or {}).get("language", script_data.get("language", "id"))
+    hook_type  = str(script_data.get("hook_type", "")).strip()
+    lang_label = "Bahasa Indonesia" if language == "id" else "English"
+
+    title     = str(script_data.get("title", "")).strip()
     hook_line = str(
         script_data.get("hook_line") or
         script_data.get("hook") or ""
@@ -147,26 +155,38 @@ def _build_scoring_prompt(narration: str, profile: str, script_data: dict) -> st
         # For long_form, send intro + first segment only (~300 words)
         preview = " ".join(words[:300])
 
-    opening_info = f"Opening hook line: {hook_line}\n" if hook_line else ""
+    opening_info   = f"Opening hook line: {hook_line}\n" if hook_line else ""
+    hook_type_info = f"Hook type: {hook_type}\n" if hook_type else ""
 
-    return f"""You are an expert YouTube Shorts content critic.
+    return f"""You are an expert YouTube Shorts content critic specializing in {niche} content.
+Language: {lang_label} — evaluate tone and style based on {lang_label} audience expectations, not generic English standards.
+Niche context: Dark, atmospheric horror/psychology — intentionally unsettling tone is a FEATURE, not a flaw. Do not penalize for darkness or ambiguity.
 Evaluate the following short-form video script excerpt based on 6 dimensions.
 Score each dimension from 0 to 10 with one decimal place.
 
 Script title: {title}
-{opening_info}
+{opening_info}{hook_type_info}
 Script narration excerpt:
 ---
 {preview}
 ---
 
-Scoring rubric:
-- hook_strength (0-10): Does the opening immediately create a curiosity gap without setup? 10 = instant scroll-stop, 0 = generic opener
-- information_density (0-10): Are there real facts, specific details, or genuine insights? 10 = packed with substance, 0 = all filler
-- pacing_score (0-10): Does the narrative flow naturally without dead weight or repetition? 10 = tight and propulsive, 0 = slow and padded
-- curiosity_gap (0-10): Does the script create unresolved questions that force the viewer to keep watching? 10 = powerful mystery engine, 0 = no tension
-- cta_effectiveness (0-10): Does the closing call-to-action feel organic and compelling? 10 = natural and powerful, 0 = forced or absent
-- anti_generic_score (0-10): Does this feel like uniquely crafted content vs generic AI output? 10 = highly original voice, 0 = could have been written by any AI
+STRICT SCORING RULES — violations are MANDATORY deductions:
+- Scores 9.0+ are RARE. Reserve only for genuinely exceptional content that would go viral.
+- Score 8.0-8.9 = good but has clear room for improvement
+- Score 7.0-7.9 = average, gets the job done
+- Score 6.0-6.9 = below average, noticeable problems
+- Score below 6.0 = significant flaws
+
+Dimension rubric with MANDATORY deductions:
+- hook_strength: Does the opening immediately stop scrolling? DEDUCT 2.0 if opener starts with "Did you know", "Have you ever", or any question format. DEDUCT 1.5 if it takes more than one sentence to get to the hook. DEDUCT 1.0 if it uses generic horror words without specificity (e.g. "terrifying", "shocking" without concrete detail).
+- information_density: Are there specific facts, names, dates, or data points? DEDUCT 2.0 if narration is mostly vague claims with no verifiable specifics. DEDUCT 1.0 if any sentence could apply to any topic (too generic).
+- pacing_score: Does each sentence earn its place? DEDUCT 1.5 if there is repetition or the same idea restated. DEDUCT 1.0 if there are filler phrases like "and that's not all", "but wait", "you won't believe".
+- curiosity_gap: Is there a genuine unresolved mystery driving the viewer forward? DEDUCT 2.0 if the mystery is resolved too early. DEDUCT 1.5 if the "mystery" is just a vague tease with no substance behind it.
+- cta_effectiveness: Does the CTA feel earned and natural? DEDUCT 2.0 if CTA says only "subscribe" or "follow" with no hook. DEDUCT 1.0 if CTA is disconnected from the video's topic.
+- anti_generic_score: Does this script have a unique voice or angle? DEDUCT 3.0 if this could have been generated by any AI with a basic horror prompt. DEDUCT 1.5 if the structure is: shocking claim → explanation → subscribe.
+
+CALIBRATION: If you are tempted to give more than 3 dimensions a score above 9.0, re-read the script and apply deductions again. A perfect 10 should be given fewer than 1 in 20 scripts.
 
 Return ONLY valid JSON, no markdown, no extra text:
 {{

@@ -1250,8 +1250,16 @@ def _add_finishing_effects(input_path: str, out_path: str, title: str,
             bait_end = duration - 0.5
             base_y = int(height * 0.65)
             
-            # Ganti tag output terakhir (yang tadinya [outv]) jadi [bait_in]
-            filter_chain = filter_chain[:-6] + "[bait_in]"
+           # Ganti label [outv] terakhir dengan [bait_in]
+            logger.debug(f"[finishing_effects] filter_chain tail: {filter_chain[-100:]}")
+            if "[outv]" in filter_chain:
+                last_idx = filter_chain.rfind("[outv]")
+                filter_chain = (filter_chain[:last_idx]
+                                + "[bait_in]"
+                                + filter_chain[last_idx + 6:])
+            else:
+                logger.warning("Comment bait skip: label [outv] tidak ditemukan di filter_chain")
+                lines = []
             
             prev_label = "bait_in"
             lines = lines[:3]
