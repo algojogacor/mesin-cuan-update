@@ -81,7 +81,7 @@ SEED_TOPICS = {
     },
 }
 
-VIRAL_VIEW_THRESHOLD = 1000
+VIRAL_VIEW_THRESHOLD = int(os.environ.get("VIRAL_VIEW_THRESHOLD", "1000"))
 _ITERATION_SUFFIX = {
     "id": [
         "Part 2 (Yang Lebih Mengejutkan)",
