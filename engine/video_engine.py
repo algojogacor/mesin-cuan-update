@@ -1229,6 +1229,47 @@ def _add_finishing_effects(input_path: str, out_path: str, title: str,
             )
         else:
             filter_chain += f"; [{current_label}]null [outv]"
+            
+        # ── Tambahkan Comment Bait Overlay ──────────────────────────────────────
+        comment_bait = script_data.get("comment_bait")
+        if comment_bait:
+            bait_clean = _safe_drawtext_text(comment_bait)
+            words = bait_clean.split()
+            lines = []
+            curr_line = ""
+            for w in words:
+                if len(curr_line) + len(w) > 35:
+                    lines.append(curr_line.strip())
+                    curr_line = w + " "
+                else:
+                    curr_line += w + " "
+            if curr_line:
+                lines.append(curr_line.strip())
+            
+            bait_start = max(duration - 6.0, 10.0)
+            bait_end = duration - 0.5
+            base_y = int(height * 0.65)
+            
+            # Ganti tag output terakhir (yang tadinya [outv]) jadi [bait_in]
+            filter_chain = filter_chain[:-6] + "[bait_in]"
+            
+            prev_label = "bait_in"
+            lines = lines[:3]
+            for i, line in enumerate(lines):
+                y_offset = base_y + (i * 55)
+                next_label = f"bait{i}" if i < len(lines)-1 else "outv"
+                filter_chain += (
+                    f"; [{prev_label}]drawtext"
+                    f"=fontfile='{fp_escaped}'"
+                    f":text='{line}'"
+                    f":fontsize=42"
+                    f":fontcolor=yellow"
+                    f":x=(w-text_w)/2:y={y_offset}"
+                    f":box=1:boxcolor=black@0.7:boxborderw=12"
+                    f":shadowx=4:shadowy=4"
+                    f":enable='between(t,{bait_start:.2f},{bait_end:.2f})'"
+                    f" [{next_label}]"
+                )
     else:
         filter_chain += "; [titlev]null [outv]"
 

@@ -27,7 +27,8 @@ from engine import (
     topic_engine, script_engine, qc_engine,
     tts_engine, footage_engine, video_engine,
     thumbnail_engine, metadata_engine, gdrive_engine,
-    state_manager, notif_engine, cleanup_engine
+    state_manager, notif_engine, cleanup_engine,
+    series_engine
 )
 
 # ── Import untuk analytics harian ────────────────────────────────────────────
@@ -328,22 +329,29 @@ def run_campaign(target_channel_id=None, dry_run=False, skip_qc=False):
     if target_channel_id:
         queue = [item for item in queue if item["channel_id"] == target_channel_id]
 
-    if not queue:
-        logger.info("✅ Tidak ada video yang perlu dirender saat ini.")
-        logger.info("   Tips: python main.py --preview  → lihat status slot")
-        logger.info("         Edit config/campaigns.json untuk tambah/aktifkan campaign")
-        return
-
     settings  = load_settings()
     ch_map    = {ch["id"]: ch for ch in settings.get("channels", [])}
 
-    # ── UPGRADE: Auto-Cleanup sebelum batch render dimulai ──────────────────
+    # ── Auto-Cleanup sebelum batch render dimulai ──────────────────────────
     active_channels = [
         ch for ch in settings.get("channels", [])
         if target_channel_id is None or ch["id"] == target_channel_id
     ]
     prepare_fresh_run(active_channels, dry_run=dry_run)
-    # ────────────────────────────────────────────────────────────────────────
+
+    # ── Series Engine: antri episode series & Part 2 viral sebelum render ──
+    if not dry_run:
+        for ch in active_channels:
+            try:
+                series_engine.check_and_queue_parts(ch)
+            except Exception as exc:
+                logger.warning(f"[{ch['id']}] series_engine error (skip): {exc}")
+
+    if not queue:
+        logger.info("✅ Tidak ada video yang perlu dirender saat ini.")
+        logger.info("   Tips: python main.py --preview  → lihat status slot")
+        logger.info("         Edit config/campaigns.json untuk tambah/aktifkan campaign")
+        return
 
     logger.info(f"\n{'#'*60}")
     logger.info(f"# Batch render: {len(queue)} video")

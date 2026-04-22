@@ -33,22 +33,22 @@
       },
       "per_channel": {
         "ch_id_horror": {
-          "shorts_per_day": 3,
+          "shorts_per_day": 5,
           "long_form_per_day": 0,
           "publish_hours_wib": [7, 12, 17, 20, 22]
         },
         "ch_id_psych": {
-          "shorts_per_day": 1,
+          "shorts_per_day": 5,
           "long_form_per_day": 0,
-          "publish_hours_wib": [7, 10, 13, 17, 22]
+          "publish_hours_wib": [7, 12, 17, 20, 22]
         },
         "ch_en_horror": {
-          "shorts_per_day": 1,
+          "shorts_per_day": 5,
           "long_form_per_day": 0,
           "publish_hours_wib": [21, 1, 9, 14, 18]
         },
         "ch_en_psych": {
-          "shorts_per_day": 1,
+          "shorts_per_day": 5,
           "long_form_per_day": 0,
           "publish_hours_wib": [21, 1, 9, 14, 18]
         }
