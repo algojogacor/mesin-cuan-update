@@ -137,6 +137,17 @@ assets/sfx/
 # assets/fonts/ → TIDAK diignore
 
 
+# ── TEST & SCRATCH FILES ──────────────────────────────────
+# File percobaan lokal — tidak perlu masuk repo
+test_*.py
+*_test.py
+testtts.py
+_test_*.py
+_check_*.py
+strategi.bat
+strategi_cli.py
+
+
 # ══════════════════════════════════════════════════════════════
 #   © 2026 Arya Rizky | @aryarizky04
 # ══════════════════════════════════════════════════════════════
