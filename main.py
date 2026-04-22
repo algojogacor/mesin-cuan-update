@@ -21,6 +21,7 @@ import glob
 import os
 import shutil
 import traceback
+from concurrent.futures import ThreadPoolExecutor
 from dotenv import load_dotenv
 from engine.utils import get_logger, load_settings, channel_data_path, load_json, save_json, timestamp
 from engine import (
@@ -128,9 +129,38 @@ def run_once(channel: dict, profile: str = "shorts",
         logger.info(f"[{ch_id}] [{profile.upper()}] ▶ STEP 6/8 — Render")
         video_path = video_engine.render(script_data, audio_path, footage_paths, channel, profile=profile)
 
-        logger.info(f"[{ch_id}] [{profile.upper()}] ▶ STEP 7/8 — Thumbnail & Metadata")
-        thumbnail_path = thumbnail_engine.generate(script_data, video_path, channel, profile=profile)
-        metadata       = metadata_engine.generate(script_data, channel, profile=profile)
+        # ══ OPTIMASI 3: Thumbnail generation paralel dengan Metadata generation ══
+        # Thumbnail dan metadata tidak saling bergantung — keduanya hanya butuh
+        # script_data, channel, dan video_path yang sudah tersedia setelah render.
+        # Thumbnail: CPU-only (PIL + FFmpeg frame extract) — tidak pakai GPU render.
+        # Metadata: pure I/O / string processing — sangat ringan.
+        # Jalankan paralel untuk mempersingkat step 7 sebelum QC dan upload.
+        logger.info(f"[{ch_id}] [{profile.upper()}] ▶ STEP 7/8 — Thumbnail & Metadata [PARALEL-3]")
+
+        def _run_thumbnail():
+            try:
+                path = thumbnail_engine.generate(script_data, video_path, channel, profile=profile)
+                logger.info(f"[{ch_id}] [PARALEL-3] Thumbnail selesai: {os.path.basename(path)}")
+                return path
+            except Exception as exc:
+                logger.error(f"[{ch_id}] Thumbnail gagal ({exc}), lanjut tanpa thumbnail")
+                return None  # Non-fatal: upload tetap jalan, thumbnail dikosongkan
+
+        def _run_metadata():
+            try:
+                meta = metadata_engine.generate(script_data, channel, profile=profile)
+                logger.info(f"[{ch_id}] [PARALEL-3] Metadata selesai")
+                return meta
+            except Exception as exc:
+                logger.error(f"[{ch_id}] Metadata gagal ({exc}), gunakan metadata minimal")
+                return {"title": script_data.get("title", ""), "description": "", "tags": []}
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            fut_thumb = executor.submit(_run_thumbnail)
+            fut_meta  = executor.submit(_run_metadata)
+            thumbnail_path = fut_thumb.result()   # Tunggu thumbnail selesai
+            metadata       = fut_meta.result()    # Tunggu metadata selesai
+        logger.info(f"[{ch_id}] [PARALEL-3] Thumbnail + Metadata selesai")
 
         if publish_at_override:
             metadata["publish_at"] = publish_at_override
@@ -525,7 +555,7 @@ if __name__ == "__main__":
         preview_campaign()
 
     elif args.review_script:
-        logger.info(f"Mode: Review Script â†’ {args.review_script}")
+        logger.info(f"Mode: Review Script → {args.review_script}")
         review_script_file(args.review_script, channel_id=args.channel)
 
     elif args.review_hook:

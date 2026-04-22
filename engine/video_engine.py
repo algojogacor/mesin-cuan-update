@@ -26,6 +26,7 @@ import subprocess
 import shutil
 import random
 import math
+from concurrent.futures import ThreadPoolExecutor, Future, as_completed
 from engine.utils import get_logger, load_settings, timestamp, channel_data_path
 
 logger = get_logger("video_engine")
@@ -417,14 +418,95 @@ def _render_shorts(script_data: dict, audio_path: str, footage_paths: list,
     music_vol = profile.get("music_volume", 0.12)
     audio_dur = _get_duration(audio_path)
 
-    # Step 1: Transcribe audio → word-level timestamps
-    sentences = _transcribe_audio(audio_path, min_seg_dur=WHISPER_MIN_SEG_DUR_SHORTS)
+    # ══ OPTIMASI 1: Whisper + Footage Prep paralel ════════════════════════════
+    # Whisper (CPU transcription) dan validasi footage path tidak saling bergantung.
+    # Keduanya hanya butuh audio_path dan footage_paths yang sudah tersedia.
+    # Jalankan paralel untuk mempersingkat waktu tunggu sebelum Ken Burns render.
+    def _run_transcribe():
+        try:
+            return _transcribe_audio(audio_path, min_seg_dur=WHISPER_MIN_SEG_DUR_SHORTS)
+        except Exception as exc:
+            logger.error(f"[{ch_id}] Whisper transkripsi gagal: {exc}")
+            return []  # Fallback: subtitle kosong, pipeline tetap jalan
 
-    # Step 2: Build footage synced ke kalimat + Ken Burns
-    synced_footage_path = _build_synced_footage(
-        footage_paths, sentences, audio_dur,
-        width, height, fps, tmp_dir, ch_id, niche
-    )
+    def _run_validate_footage():
+        """Validasi dan filter footage_paths — hanya operasi I/O ringan, bukan encode."""
+        try:
+            valid = [p for p in footage_paths if p and os.path.exists(p)]
+            if not valid:
+                logger.warning(f"[{ch_id}] Tidak ada footage valid ditemukan, pipeline mungkin fallback")
+            return valid
+        except Exception as exc:
+            logger.warning(f"[{ch_id}] Validasi footage gagal ({exc}), gunakan list original")
+            return footage_paths
+
+    logger.info(f"[{ch_id}] [PARALEL-1] Mulai Whisper + validasi footage secara paralel")
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        fut_transcribe = executor.submit(_run_transcribe)
+        fut_footage    = executor.submit(_run_validate_footage)
+        sentences      = fut_transcribe.result()   # Tunggu Whisper selesai
+        valid_footage  = fut_footage.result()      # Tunggu validasi selesai
+    logger.info(f"[{ch_id}] [PARALEL-1] Selesai: {len(sentences)} segmen | {len(valid_footage)} footage valid")
+
+    # ══ OPTIMASI 2: Music Selection paralel dengan Ken Burns render ═══════════
+    # music selection (build_music_plan) hanya butuh script_data, niche, audio_dur
+    # yang sudah tersedia — tidak bergantung pada hasil footage render.
+    # Ken Burns render (CPU/GPU-bound) bisa jalan bersamaan karena music
+    # selection adalah I/O + LLM call yang tidak pakai GPU sama sekali.
+    music_mood = _resolve_music_mood(script_data, niche, "shorts")
+
+    def _run_music_selection():
+        """Pilih dan siapkan track musik — hanya network/disk I/O, tidak pakai GPU."""
+        try:
+            plan = music_engine.build_music_plan(
+                music_mood,
+                audio_dur,
+                ch_id,
+                script_data=script_data,
+                profile="shorts",
+            )
+            path = _prepare_music_bed(
+                plan,
+                tmp_dir,
+                audio_dur,
+                fallback_mood=music_mood,
+                music_engine_module=music_engine,
+                channel_id=ch_id,
+                script_data=script_data,
+                profile="shorts",
+            )
+            logger.info(f"[{ch_id}] [PARALEL-2] Music selection selesai: {os.path.basename(path)}")
+            return path
+        except Exception as exc:
+            logger.error(f"[{ch_id}] Music selection gagal ({exc}), fallback ke silence")
+            # Fallback: buat file audio kosong singkat agar pipeline tidak crash
+            silence_path = f"{tmp_dir}/silence_fallback.mp3"
+            try:
+                subprocess.run(
+                    ["ffmpeg", "-y", "-f", "lavfi", "-i",
+                     f"anullsrc=r=48000:cl=stereo",
+                     "-t", str(int(audio_dur) + 3), "-c:a", "libmp3lame", silence_path],
+                    capture_output=True
+                )
+            except Exception:
+                pass
+            return silence_path
+
+    def _run_ken_burns():
+        """Build sinced footage dengan Ken Burns effect — CPU + GPU encode."""
+        synced = _build_synced_footage(
+            valid_footage, sentences, audio_dur,
+            width, height, fps, tmp_dir, ch_id, niche
+        )
+        return synced
+
+    logger.info(f"[{ch_id}] [PARALEL-2] Mulai Ken Burns render + music selection secara paralel")
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        fut_music     = executor.submit(_run_music_selection)
+        fut_ken_burns = executor.submit(_run_ken_burns)
+        music_path        = fut_music.result()      # Tunggu music selesai
+        synced_footage_path = fut_ken_burns.result()  # Tunggu Ken Burns selesai
+    logger.info(f"[{ch_id}] [PARALEL-2] Selesai: footage synced + music ready")
 
     # Step 3: Color grade sesuai niche
     graded_footage_path = f"{tmp_dir}/graded.mp4"
@@ -435,24 +517,7 @@ def _render_shorts(script_data: dict, audio_path: str, footage_paths: list,
     _sync_video_to_audio(graded_footage_path, audio_path, video_synced_path)
 
     # Step 5: Mix audio — narasi + musik background dengan ducking
-    music_mood = _resolve_music_mood(script_data, niche, "shorts")
-    music_plan = music_engine.build_music_plan(
-        music_mood,
-        audio_dur,
-        ch_id,
-        script_data=script_data,
-        profile="shorts",
-    )
-    music_path = _prepare_music_bed(
-        music_plan,
-        tmp_dir,
-        audio_dur,
-        fallback_mood=music_mood,
-        music_engine_module=music_engine,
-        channel_id=ch_id,
-        script_data=script_data,
-        profile="shorts",
-    )
+    # music_path sudah tersedia dari Optimasi 2 di atas
     mixed_audio_path  = f"{tmp_dir}/mixed_audio.mp3"
     _mix_audio_with_ducking(audio_path, music_path, mixed_audio_path, music_vol, audio_dur)
 
