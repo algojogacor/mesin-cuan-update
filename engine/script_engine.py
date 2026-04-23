@@ -35,7 +35,7 @@ from engine.research_engine import research_topic, build_research_addon
 
 logger = get_logger("script_engine")
 
-MIN_WORDS = {"shorts": 90, "long_form": 1300}
+MIN_WORDS = {"shorts": 80, "long_form": 1300}
 
 # Delay antar provider switch (detik)
 PROVIDER_SWITCH_DELAY = 60
@@ -1153,48 +1153,170 @@ def review_and_iterate(script_data: dict, channel: dict, profile: str = "shorts"
     """
     Retention-first review loop for Shorts.
 
-    Flow:
-    1. AI reviewer scores the draft.
-    2. If score is below threshold, reviewer must directly rewrite the script JSON.
-    3. Revised draft is scored one final time.
-    4. If still below threshold, keep the revised version anyway to avoid infinite loops.
+    Flow (NEW — Feedback Loop):
+    1. AI scorer (cross-provider) menilai draft dan menghasilkan critique spesifik.
+    2. Jika skor < threshold DAN critique tidak kosong:
+       a. Critique dikirim ke generator ASLI sebagai instruksi perbaikan [feedback_loop].
+       b. Generator merevisi hanya bagian yang bermasalah — bukan rewrite dari nol.
+       c. Hasil revisi di-score ulang.
+       d. Ambil yang terbaik antara original dan revisi.
+    3. Jika feedback loop gagal → fallback ke rewrite penuh (legacy behavior).
+    4. Skor final dicatat di review_meta.
+
+    Constraint:
+    - Maksimal 1x feedback loop per attempt (tidak infinite loop).
+    - Provider generator untuk revisi sama dengan generator asli (anti-sycophancy).
+    - Fallback rewrite tetap ada sebagai safety net.
     """
     if profile != "shorts":
         return script_data
 
-    current = deepcopy(script_data)
+    from engine.script_quality_scorer import score_script
+
+    current   = deepcopy(script_data)
     threshold = SHORTS_REVIEW_MIN_SCORE
+    language  = channel.get("language", "id")
 
-    first_review = _review_script_payload(current, channel, threshold, mode="rewrite_if_below")
-    initial_score = float(first_review.get("score", 0))
-    rewritten = False
+    # ── Step 1: Score draft awal dengan cross-provider scorer ─────────────────
+    # Gunakan scorer yang BERBEDA dari generator asli (anti-sycophancy).
+    # Generator asli tersimpan di script_data["quality_score"]["scorer_provider"]
+    # (di-set oleh _generate_and_pick_best). Jika tidak ada, default ke "ollama".
+    original_scorer = (
+        script_data.get("quality_score", {}).get("scorer_provider", "ollama")
+    )
+    # Generator asli = kebalikan dari scorer (karena cross-provider scoring)
+    original_generator = "qwen" if original_scorer == "ollama" else "ollama"
 
-    if initial_score < threshold and isinstance(first_review.get("updated_script"), dict):
-        current = _merge_reviewed_script(current, first_review["updated_script"], profile)
+    initial_quality = score_script(
+        current,
+        profile=profile,
+        scorer_provider=original_scorer,
+        channel=channel,
+    )
+    initial_score   = float(initial_quality.get("overall", 0.0))
+    initial_critique = initial_quality.get("critique", "").strip()
+    weakest_aspect   = initial_quality.get("weakest_aspect", "").strip()
+
+    logger.info(
+        f"[{channel['id']}] [review] Initial score: {initial_score:.1f} "
+        f"| weakest: {weakest_aspect} | critique: {initial_critique[:80]}..."
+    )
+
+    # ── Step 2: Feedback Loop jika skor di bawah threshold ───────────────────
+    revised_script = None
+    revised_score  = initial_score
+    feedback_loop_used = False
+
+    if initial_score < threshold and initial_critique:
+        logger.info(
+            f"[{channel['id']}] [feedback_loop] Skor {initial_score:.1f} < threshold {threshold} "
+            f"— mengirim critique ke {original_generator} untuk revisi..."
+        )
+        feedback_msg = _build_feedback_message(
+            score=initial_score,
+            critique=initial_critique,
+            weakest_aspect=weakest_aspect,
+            language=language,
+        )
+        try:
+            revised_raw = _call_revision_with_feedback(
+                original_script=current,
+                feedback_message=feedback_msg,
+                generator_provider=original_generator,
+                profile=profile,
+                channel=channel,
+            )
+            if revised_raw and isinstance(revised_raw, dict):
+                # Score ulang hasil revisi
+                revised_quality = score_script(
+                    revised_raw,
+                    profile=profile,
+                    scorer_provider=original_scorer,
+                    channel=channel,
+                )
+                revised_score = float(revised_quality.get("overall", initial_score))
+                logger.info(
+                    f"[{channel['id']}] [feedback_loop] Revised score: "
+                    f"{initial_score:.1f} → {revised_score:.1f}"
+                )
+
+                # Ambil yang terbaik: original vs revisi
+                if revised_score >= initial_score:
+                    revised_script = revised_raw
+                    revised_script["quality_score"] = revised_quality
+                    logger.info(
+                        f"[{channel['id']}] [feedback_loop] ✅ Revisi lebih baik "
+                        f"({revised_score:.1f} >= {initial_score:.1f}) — pakai revisi"
+                    )
+                else:
+                    logger.info(
+                        f"[{channel['id']}] [feedback_loop] Original lebih baik "
+                        f"({initial_score:.1f} > {revised_score:.1f}) — tetap pakai original"
+                    )
+                    revised_score = initial_score  # kembalikan ke skor asli
+
+                feedback_loop_used = True
+        except Exception as exc:
+            logger.warning(
+                f"[{channel['id']}] [feedback_loop] Gagal ({exc}) "
+                "— fallback ke legacy rewrite"
+            )
+
+    # Terapkan hasil feedback loop jika ada revisi yang lebih baik
+    if revised_script is not None:
+        current = _merge_reviewed_script(current, revised_script, profile)
         current = inject_hook(current, channel)
-        rewritten = True
+        final_score = revised_score
+        rewritten   = True
+        method_used = "feedback_loop"
+    else:
+        # ── Step 3 (Fallback): Legacy rewrite jika feedback loop tidak jalan
+        #    atau critique kosong. Pertahankan behavior lama agar pipeline tidak crash.
+        rewritten = False
+        method_used = "none"
 
-    final_score = initial_score
-    final_review = first_review
-    if rewritten and SHORTS_REVIEW_MAX_PASSES >= 2:
-        final_review = _review_script_payload(current, channel, threshold, mode="score_only")
-        final_score = float(final_review.get("score", initial_score))
+        if initial_score < threshold and not feedback_loop_used:
+            logger.info(
+                f"[{channel['id']}] [review] Feedback loop tidak tersedia "
+                "— fallback ke legacy rewrite"
+            )
+            first_review = _review_script_payload(
+                current, channel, threshold, mode="rewrite_if_below"
+            )
+            if isinstance(first_review.get("updated_script"), dict):
+                current   = _merge_reviewed_script(current, first_review["updated_script"], profile)
+                current   = inject_hook(current, channel)
+                rewritten = True
+                method_used = "legacy_rewrite"
+
+                if SHORTS_REVIEW_MAX_PASSES >= 2:
+                    final_review = _review_script_payload(
+                        current, channel, threshold, mode="score_only"
+                    )
+                    final_score = float(final_review.get("score", initial_score))
+                else:
+                    final_score = initial_score
+            else:
+                final_score = initial_score
+        else:
+            final_score = revised_score  # bisa == initial_score jika tidak ada revisi
 
     current["review_meta"] = {
-        "threshold": threshold,
-        "initial_score": initial_score,
-        "final_score": final_score,
-        "initial_status": first_review.get("status", "unknown"),
-        "final_status": final_review.get("status", first_review.get("status", "unknown")),
-        "rewritten": rewritten,
-        "approved": final_score >= threshold or rewritten,
-        "provider": final_review.get("provider") or first_review.get("provider"),
-        "notes": final_review.get("reason") or first_review.get("reason", ""),
+        "threshold":      threshold,
+        "initial_score":  initial_score,
+        "final_score":    final_score,
+        "weakest_aspect": weakest_aspect,
+        "critique":       initial_critique,
+        "rewritten":      rewritten,
+        "method":         method_used,   # "feedback_loop" | "legacy_rewrite" | "none"
+        "approved":       final_score >= threshold or rewritten,
+        "generator_used": original_generator,
+        "scorer_used":    original_scorer,
     }
     current["retention_score"] = final_score
     logger.info(
-        f"[{channel['id']}] Review retention: {initial_score:.1f} -> {final_score:.1f} "
-        f"| rewritten={rewritten}"
+        f"[{channel['id']}] Review selesai: {initial_score:.1f} → {final_score:.1f} "
+        f"| method={method_used} | approved={current['review_meta']['approved']}"
     )
     return current
 
@@ -1401,6 +1523,100 @@ def _merge_reviewed_script(original: dict, updated: dict, profile: str) -> dict:
 
     merged = _normalize_shorts_schema(merged)
     return _validate_and_fix(merged, profile)
+
+
+# ─── Feedback Loop Helpers ────────────────────────────────────────────────────
+
+def _build_feedback_message(score: float, critique: str, weakest_aspect: str, language: str) -> str:
+    """
+    Buat feedback message bilingual yang dikirim ke generator untuk revisi.
+    Format disesuaikan dengan bahasa channel agar generator merespons natural.
+    """
+    if language == "en":
+        return (
+            f"[REVISION REQUEST]\n"
+            f"Your script scored {score:.1f}/10. The reviewer identified these specific issues:\n"
+            f"{critique}\n"
+            f"Weakest dimension: {weakest_aspect}\n\n"
+            "Revise the script to fix these specific issues. "
+            "Keep what works, only fix what's broken. "
+            "Return the full revised script in the same JSON format."
+        )
+    # Default: Bahasa Indonesia
+    return (
+        f"[PERMINTAAN REVISI]\n"
+        f"Script kamu mendapat skor {score:.1f}/10. Reviewer menemukan masalah spesifik berikut:\n"
+        f"{critique}\n"
+        f"Dimensi terlemah: {weakest_aspect}\n\n"
+        "Revisi script untuk memperbaiki masalah spesifik ini. "
+        "Pertahankan yang sudah bagus, hanya perbaiki yang bermasalah. "
+        "Kembalikan script lengkap yang sudah direvisi dalam format JSON yang sama."
+    )
+
+
+def _call_revision_with_feedback(
+    original_script: dict,
+    feedback_message: str,
+    generator_provider: str,
+    profile: str,
+    channel: dict,
+) -> dict | None:
+    """
+    Kirim critique ke generator asli sebagai instruksi perbaikan.
+    Generator hanya perlu merevisi bagian bermasalah — bukan rewrite dari nol.
+    Menggunakan provider yang SAMA dengan generator asli untuk anti-sycophancy.
+
+    Return:
+        dict  — script hasil revisi yang sudah di-parse
+        None  — jika revision call gagal (caller akan fallback ke legacy rewrite)
+    """
+    ch_id    = channel.get("id", "?")
+    language = channel.get("language", "id")
+    niche    = channel.get("niche", "horror_facts")
+
+    # System prompt minimalis — fokus pada revisi, bukan generate ulang dari nol
+    if language == "en":
+        system_prompt = (
+            f"You are an expert {niche} YouTube Shorts script editor. "
+            "You will receive a script JSON and specific critique. "
+            "Your task is to revise ONLY the weak parts identified in the critique. "
+            "Preserve the structure, tone, and strong elements. "
+            "Return ONLY valid JSON in the same format as the input script."
+        )
+    else:
+        system_prompt = (
+            f"Kamu adalah editor script YouTube Shorts spesialis {niche}. "
+            "Kamu akan menerima script JSON dan critique spesifik. "
+            "Tugasmu adalah merevisi HANYA bagian lemah yang diidentifikasi dalam critique. "
+            "Pertahankan struktur, tone, dan elemen yang sudah kuat. "
+            "Kembalikan HANYA JSON valid dalam format yang sama dengan script input."
+        )
+
+    # Trim script untuk hemat token — hanya field narasi yang relevan
+    trimmed = _trim_script_for_review(original_script)
+    script_json = json.dumps(trimmed, ensure_ascii=False, indent=2)
+
+    user_message = (
+        f"{feedback_message}\n\n"
+        f"ORIGINAL SCRIPT JSON:\n{script_json}\n\n"
+        "CRITICAL: Respond with ONLY a raw JSON object. "
+        "No markdown, no explanation. Start with { and end with }."
+    )
+
+    logger.info(
+        f"[{ch_id}] [feedback_loop] Mengirim critique ke generator={generator_provider} "
+        f"untuk revisi (provider sama = anti-sycophancy terjaga)"
+    )
+
+    try:
+        if generator_provider == "qwen" and os.getenv("QWEN_API_KEY"):
+            return _call_qwen(system_prompt, user_message, profile)
+        else:
+            # Fallback ke Ollama jika Qwen tidak tersedia atau generator aslinya Ollama
+            return _call_ollama(system_prompt, user_message, profile)
+    except Exception as exc:
+        logger.warning(f"[{ch_id}] [feedback_loop] Revision call gagal: {exc}")
+        return None
 
 
 def _build_part_instruction(
