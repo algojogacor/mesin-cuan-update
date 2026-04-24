@@ -21,7 +21,7 @@ import requests
 
 from engine.retention_engine import get_topic_hints
 from engine.trending_engine import get_trending_topics
-from engine.utils import channel_data_path, get_logger, require_env, save_json, timestamp
+from engine.utils import channel_data_path, get_logger, require_env, save_json, timestamp, get_ollama_model
 
 logger = get_logger("topic_engine")
 
@@ -102,7 +102,6 @@ TOPIC_SELECTOR_MAX_CANDIDATES = 14
 QWEN_API_BASE = os.environ.get("QWEN_API_BASE", "http://34.57.12.120:9000/v1")
 QWEN_MODEL = os.environ.get("QWEN_MODEL", "qwen3-235b-a22b")
 OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
-OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "deepseek-v3.1:671b-cloud")
 
 
 def _get_viral_iteration(channel: dict, used_topics: list) -> str | None:
@@ -328,7 +327,7 @@ def _generate_candidates_via_ai(niche: str, language: str, hints=None,
         resp = requests.post(
             f"{OLLAMA_BASE_URL}/api/chat",
             json={
-                "model": OLLAMA_MODEL,
+                "model": get_ollama_model(),
                 "messages": [{"role": "user", "content": prompt}],
                 "stream": False,
                 "format": "json",
@@ -358,9 +357,9 @@ def _generate_candidates_via_ai(niche: str, language: str, hints=None,
         resp = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.90,
-            top_p=0.95,
-            frequency_penalty=0.25,
+            temperature=1.1,
+            top_p=0.98,
+            frequency_penalty=0.50,
             max_tokens=300,
         )
         return _clean_topic_list(json.loads(resp.choices[0].message.content.strip()))
@@ -637,7 +636,7 @@ def _call_topic_selector(provider: str, prompt: str) -> str:
     resp = requests.post(
         f"{OLLAMA_BASE_URL}/api/chat",
         json={
-            "model": OLLAMA_MODEL,
+            "model": get_ollama_model(),
             "messages": [
                 {"role": "system", "content": "You are a viral topic strategist. Output JSON only."},
                 {"role": "user", "content": prompt},

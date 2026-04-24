@@ -28,13 +28,12 @@ import random
 import re
 import requests
 from datetime import datetime
-from engine.utils import get_logger, channel_data_path
+from engine.utils import get_logger, channel_data_path, get_ollama_model
 
 logger = get_logger("thumbnail_intelligence")
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
-OLLAMA_MODEL    = os.environ.get("OLLAMA_MODEL",    "deepseek-v3.1:671b-cloud")
 QWEN_API_BASE   = os.environ.get("QWEN_API_BASE",   "http://34.57.12.120:9000/v1")
 QWEN_MODEL      = os.environ.get("QWEN_MODEL",      "qwen3-235b-a22b")
 QWEN_MODEL_CANDIDATES = [
@@ -512,9 +511,9 @@ def _qwen_generate(prompt: str) -> str:
                     "model": model_name,
                     "messages": [{"role": "user", "content": prompt}],
                     # Thumbnail generator: creative but controlled (Qwen: no top_k/seed)
-                    "temperature":       0.75,
-                    "top_p":             0.95,
-                    "frequency_penalty": 0.25,  # ~repeat_penalty 1.1 di Ollama
+                    "temperature":       0.95,
+                    "top_p":             0.98,
+                    "frequency_penalty": 0.50,  # ~repeat_penalty 1.1 di Ollama
                     "max_tokens":        200,
                 },
                 timeout=GEN_TIMEOUT,
@@ -534,7 +533,7 @@ def _qwen_generate(prompt: str) -> str:
 
 def _ollama_generate(prompt: str) -> str:
     payload = {
-        "model": OLLAMA_MODEL,
+        "model": get_ollama_model(),
         "messages": [{"role": "user", "content": prompt}],
         "stream": False,
         "options": {

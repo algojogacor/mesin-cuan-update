@@ -31,13 +31,12 @@ import re
 
 import requests
 
-from engine.utils import get_logger
+from engine.utils import get_logger, get_ollama_model
 
 logger = get_logger("script_quality_scorer")
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
-OLLAMA_MODEL    = os.environ.get("OLLAMA_MODEL",    "deepseek-v3.1:671b-cloud")
 QWEN_API_BASE   = os.environ.get("QWEN_API_BASE",   "http://34.57.12.120:9000/v1")
 QWEN_MODEL      = os.environ.get("QWEN_MODEL",      "qwen3-235b-a22b")
 QWEN_MODEL_CANDIDATES = [
@@ -285,7 +284,7 @@ def _call_qwen(prompt: str) -> str:
 
 def _call_ollama(prompt: str) -> str:
     payload = {
-        "model": OLLAMA_MODEL,
+        "model": get_ollama_model(),
         "messages": [
             {
                 "role": "system",

@@ -39,7 +39,6 @@ NVIDIA_VISION_MODEL = "meta/llama-4-maverick-17b-128e-instruct"
 
 # ── Ollama fallback config ─────────────────────────────────────────────────────
 OLLAMA_BASE_URL     = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-OLLAMA_TEXT_MODEL   = "deepseek-v3.1:671b-cloud"
 OLLAMA_VISION_MODEL = "qwen3-vl:235b-cloud"
 
 # ── Frame sampling ─────────────────────────────────────────────────────────────
@@ -155,7 +154,7 @@ def _analyze_podcast(video_path: str, min_clips: int,
         logger.info(f"[ai] Kirim ke NVIDIA: {NVIDIA_TEXT_MODEL}")
         response_text = _nvidia_text(nvidia_key, NVIDIA_TEXT_MODEL, prompt)
     else:
-        logger.info(f"[ai] Kirim ke Ollama: {OLLAMA_TEXT_MODEL}")
+        logger.info(f"[ai] Kirim ke Ollama: {get_ollama_model()}")
         response_text = _ollama_text(OLLAMA_TEXT_MODEL, prompt)
 
     return _parse_response(response_text, video_path, duration_sec)

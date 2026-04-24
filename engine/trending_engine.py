@@ -15,7 +15,7 @@ import re
 import requests
 from datetime import datetime, timedelta, timezone
 from urllib.parse import quote_plus
-from engine.utils import get_logger, require_env, save_json
+from engine.utils import get_logger, require_env, save_json, get_ollama_model
 
 logger = get_logger("trending_engine")
 
@@ -31,7 +31,6 @@ CF_CRAWL_URL = "https://api.cloudflare.com/client/v4/accounts/{account_id}/brows
 
 # Ollama config (mengambil dari env yang sama dengan script_engine)
 OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
-OLLAMA_MODEL    = os.environ.get("OLLAMA_MODEL",    "deepseek-v3.1:671b-cloud")
 
 # ─── Keyword mapping per niche & language ─────────────────────────────────────
 NICHE_KEYWORDS = {
@@ -229,7 +228,7 @@ def get_trending_topics(niche: str, language: str, channel_id: str = None, limit
     # 4. Ollama AI Brainstorming (Sebagai pelengkap atau jika semua sumber gagal)
     if len(topics) < limit:
         try:
-            logger.info(f"[trending] Mencoba brainstorming via Ollama ({OLLAMA_MODEL})...")
+            logger.info(f"[trending] Mencoba brainstorming via Ollama ({get_ollama_model()})...")
             ai_topics = _generate_via_ollama(niche, language, existing_topics=topics)
             if ai_topics:
                 topics.extend(ai_topics)
@@ -266,10 +265,10 @@ def _generate_via_ollama(niche: str, language: str, existing_topics: list) -> li
         prompt += f"\nAvoid these topics: {', '.join(existing_topics[:10])}"
 
     payload = {
-        "model": OLLAMA_MODEL,
+        "model": get_ollama_model(),
         "prompt": prompt,
         "stream": False,
-        "options": {"temperature": 0.8}
+        "options": {"temperature": 1.0, "top_p": 0.98, "top_k": 80}
     }
 
     try:

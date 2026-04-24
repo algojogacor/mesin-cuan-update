@@ -106,3 +106,20 @@ def require_env(key: str) -> str:
     if not val:
         raise EnvironmentError(f"Missing required environment variable: {key}")
     return val
+
+
+# ─── Ollama Model Rotator ───────────────────────────────────────────────────
+def get_ollama_model() -> str:
+    import random
+    models = [
+        "mistral-large-3:675b-cloud",
+        "deepseek-v4-flash:cloud",
+        "kimi-k2.6:cloud",
+        "gemini-3-flash-preview:cloud",
+        "gpt-oss:120b-cloud",
+        "deepseek-v3.1:671b-cloud"
+    ]
+    chosen = random.choice(models)
+    logger = get_logger("ollama_rotator")
+    logger.info(f"Ollama Model selected: {chosen}")
+    return chosen

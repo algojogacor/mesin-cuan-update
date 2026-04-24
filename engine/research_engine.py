@@ -15,7 +15,7 @@ import os
 import json
 import requests
 
-from engine.utils import get_logger
+from engine.utils import get_logger, get_ollama_model
 
 logger = get_logger("research_engine")
 
@@ -23,7 +23,6 @@ PERPLEXITY_API_BASE = "https://api.perplexity.ai"
 PERPLEXITY_MODEL = os.environ.get("PERPLEXITY_MODEL", "perplexity/sonar")
 
 OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
-OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "deepseek-v3.1:671b-cloud")
 
 RESEARCH_TIMEOUT = 30  # detik — cepat, jangan block pipeline terlalu lama
 MAX_CONTEXT_CHARS = 1800  # Batasi panjang context agar tidak membanjiri prompt
@@ -189,10 +188,10 @@ def _try_ollama_native_search(query: str, language: str) -> dict:
         )
         
         payload = {
-            "model": OLLAMA_MODEL,
+            "model": get_ollama_model(),
             "messages": [{"role": "user", "content": summary_prompt}],
             "stream": False,
-            "options": {"temperature": 0.2}
+            "options": {"temperature": 0.8}
             # num_predict dihapus agar max tokens limit tidak dibatasi
         }
         resp2 = requests.post(f"{OLLAMA_BASE_URL}/api/chat", json=payload, timeout=RESEARCH_TIMEOUT)
@@ -235,7 +234,7 @@ def _try_ollama_web_search(query: str, language: str) -> dict:
         ]
         
         payload = {
-            "model": OLLAMA_MODEL,
+            "model": get_ollama_model(),
             "messages": messages,
             "tools": [
                 {
@@ -257,7 +256,7 @@ def _try_ollama_web_search(query: str, language: str) -> dict:
                 }
             ],
             "stream": False,
-            "options": {"temperature": 0.2}, # Hapus batas num_predict
+            "options": {"temperature": 0.8}, # Hapus batas num_predict
         }
 
         resp = requests.post(f"{OLLAMA_BASE_URL}/api/chat", json=payload, timeout=RESEARCH_TIMEOUT)

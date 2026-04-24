@@ -19,7 +19,7 @@ import random
 import re
 import shutil
 import requests
-from engine.utils import get_logger, channel_data_path
+from engine.utils import get_logger, channel_data_path, get_ollama_model
 
 logger = get_logger("music_engine")
 
@@ -43,7 +43,6 @@ MUSIC_SELECTION_MAX_CANDIDATES = int(os.environ.get("MUSIC_SELECTION_MAX_CANDIDA
 QWEN_API_BASE = os.environ.get("QWEN_API_BASE", "http://34.57.12.120:9000/v1")
 QWEN_MODEL = os.environ.get("QWEN_MODEL", "qwen3-235b-a22b")
 OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
-OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "deepseek-v3.1:671b-cloud")
 
 MIXKIT_MOOD_PAGES = {
     "dark ambient": "https://mixkit.co/free-stock-music/ambient/",
@@ -601,7 +600,7 @@ def _call_music_ai_provider(provider: str, prompt: str) -> str:
     resp = requests.post(
         f"{OLLAMA_BASE_URL}/api/chat",
         json={
-            "model": OLLAMA_MODEL,
+            "model": get_ollama_model(),
             "messages": [
                 {"role": "system", "content": "You are a music supervisor for short-form video. Output JSON only."},
                 {"role": "user", "content": prompt},

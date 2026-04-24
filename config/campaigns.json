@@ -28,27 +28,27 @@
       "active": true,
       "schedule": {
         "type": "range",
-        "start_date": "2026-04-21",
-        "end_date": "2026-04-24"
+        "start_date": "2026-04-25",
+        "end_date": "2026-04-25"
       },
       "per_channel": {
         "ch_id_horror": {
-          "shorts_per_day": 0,
+          "shorts_per_day": 5,
           "long_form_per_day": 0,
           "publish_hours_wib": [7, 12, 17, 20, 22]
         },
         "ch_id_psych": {
-          "shorts_per_day": 0,
+          "shorts_per_day": 1,
           "long_form_per_day": 0,
           "publish_hours_wib": [7, 12, 17, 20, 22]
         },
         "ch_en_horror": {
-          "shorts_per_day": 5,
+          "shorts_per_day": 1,
           "long_form_per_day": 0,
           "publish_hours_wib": [21, 1, 9, 14, 18]
         },
         "ch_en_psych": {
-          "shorts_per_day": 5,
+          "shorts_per_day": 1,
           "long_form_per_day": 0,
           "publish_hours_wib": [21, 1, 9, 14, 18]
         }

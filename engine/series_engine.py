@@ -18,7 +18,7 @@ import os
 from datetime import datetime
 from typing import Optional
 
-from engine.utils import get_logger, save_json
+from engine.utils import get_logger, save_json, get_ollama_model
 from engine.state_manager import get_videos_for_channel
 
 logger = get_logger("series_engine")
@@ -370,14 +370,13 @@ Format WAJIB JSON tunggal murni (tanpa tag markdown ```json ):
     try:
         import requests
         OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
-        OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "deepseek-v3.1:671b-cloud")
         
         payload = {
-            "model": OLLAMA_MODEL,
+            "model": get_ollama_model(),
             "messages": [{"role": "user", "content": prompt}],
             "stream": False,
             "format": "json",
-            "options": {"temperature": 0.75}
+            "options": {"temperature": 1.0, "top_p": 0.98, "top_k": 80}
         }
         
         resp = requests.post(f"{OLLAMA_BASE_URL}/api/chat", json=payload, timeout=300)

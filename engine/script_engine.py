@@ -25,7 +25,7 @@ import random
 import concurrent.futures
 from copy import deepcopy
 import requests
-from engine.utils import get_logger, require_env, load_prompt, timestamp, save_json, channel_data_path
+from engine.utils import get_logger, require_env, load_prompt, timestamp, save_json, channel_data_path, get_ollama_model
 
 # ── BARU: Imports untuk fitur Hook & Retention ─────────────────────────────────
 from engine.hook_engine import inject_hook
@@ -45,7 +45,6 @@ MAX_JSON_RETRY = 3
 
 # Ollama config
 OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
-OLLAMA_MODEL    = os.environ.get("OLLAMA_MODEL",    "deepseek-v3.1:671b-cloud")
 QWEN_API_BASE   = os.environ.get("QWEN_API_BASE",   "http://34.57.12.120:9000/v1")
 QWEN_MODEL      = os.environ.get("QWEN_MODEL",      "qwen3-235b-a22b")
 QWEN_MODEL_CANDIDATES = [
@@ -404,8 +403,11 @@ def _call_ollama(system_prompt: str, user_message: str, profile: str) -> dict:
                 "Do NOT use markdown code blocks. Start directly with { ."
             )
 
+        selected_model = get_ollama_model()
+        logger.info(f"Menggunakan Ollama model: {selected_model}")
+        
         payload = {
-            "model":   OLLAMA_MODEL,
+            "model": selected_model,
             "messages": [
                 {"role": "system", "content": system_with_json},
                 {"role": "user",   "content": user_msg},
@@ -414,9 +416,9 @@ def _call_ollama(system_prompt: str, user_message: str, profile: str) -> dict:
             "format":  "json",
             "options": {
                 # Generator: high creativity, anti-repetition
-                "temperature":    max(0.5, 0.90 - (attempt - 1) * 0.10),  # 0.90 -> 0.80 -> 0.70
-                "top_p":          0.95,
-                "top_k":          50,
+                "temperature":    max(0.7, 1.10 - (attempt - 1) * 0.10),  # 1.10 -> 1.00 -> 0.90
+                "top_p":          0.98,
+                "top_k":          80,
                 "repeat_penalty": 1.15,
                 "num_ctx":        16384,
                 "seed":           -1,   # -1 = random, variasi antar video
@@ -444,7 +446,9 @@ def _call_ollama(system_prompt: str, user_message: str, profile: str) -> dict:
             continue
 
         try:
-            return _parse_json_response(raw, profile)
+            parsed_result = _parse_json_response(raw, profile)
+            parsed_result["generator_model"] = selected_model
+            return parsed_result
         except (json.JSONDecodeError, ValueError) as e:
             logger.warning(f"Ollama attempt {attempt}/{MAX_JSON_RETRY}: JSON parse gagal — {e}")
             if attempt == MAX_JSON_RETRY:
@@ -493,9 +497,9 @@ def _call_qwen(system_prompt: str, user_message: str, profile: str) -> dict:
                             {"role": "user", "content": user_msg},
                         ],
                         # Generator: high creativity (Qwen: no top_k/seed support)
-                        "temperature":       max(0.5, 0.90 - (attempt - 1) * 0.10),
-                        "top_p":             0.95,
-                        "frequency_penalty": 0.35,  # ~repeat_penalty 1.15 di Ollama
+                        "temperature":       max(0.7, 1.10 - (attempt - 1) * 0.10),
+                        "top_p":             0.98,
+                        "frequency_penalty": 0.50,  # ~repeat_penalty 1.15 di Ollama
                     },
                     timeout=qwen_timeout,  # 600s untuk proxy latency
                 )
@@ -1348,10 +1352,12 @@ def _review_script_payload(script_data: dict, channel: dict, threshold: float, m
 
 def _call_review_provider(provider: str, prompt: str) -> str:
     if provider == "DeepSeek/Ollama":
+        selected_model = get_ollama_model()
+        logger.info(f"Menggunakan Ollama model (Reviewer): {selected_model}")
         resp = requests.post(
             f"{OLLAMA_BASE_URL}/api/chat",
             json={
-                "model": OLLAMA_MODEL,
+                "model": selected_model,
                 "messages": [
                     {"role": "system", "content": "You are a ruthless short-form editor. Output JSON only."},
                     {"role": "user", "content": prompt},

@@ -12,13 +12,12 @@ import os
 import random
 import re
 import requests
-from engine.utils import get_logger, require_env
+from engine.utils import get_logger, require_env, get_ollama_model
 from engine.memory_engine import get_recent_creative_memory
 
 logger = get_logger("hook_engine")
 
 OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
-OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "deepseek-v3.1:671b-cloud")
 QWEN_API_BASE = os.environ.get("QWEN_API_BASE", "http://34.57.12.120:9000/v1")
 QWEN_MODEL = os.environ.get("QWEN_MODEL", "qwen3-235b-a22b")
 QWEN_MODEL_CANDIDATES = [
@@ -175,7 +174,7 @@ Return JSON only:
             model="llama-3.3-70b-versatile",
             messages=[{"role": "user", "content": prompt}],
             response_format={"type": "json_object"},
-            temperature=0.6,
+            temperature=0.9,
         )
         return json.loads(resp.choices[0].message.content)
     except Exception as exc:
@@ -183,7 +182,7 @@ Return JSON only:
 
     try:
         payload = {
-            "model": OLLAMA_MODEL,
+            "model": get_ollama_model(),
             "messages": [
                 {"role": "system", "content": "You are a viral copywriting assistant. Output JSON only."},
                 {"role": "user", "content": prompt},
@@ -415,7 +414,7 @@ def _call_hook_provider(provider: str, prompt: str) -> str:
         raise RuntimeError(f"Hook Qwen gagal di semua model: {last_error}")
 
     payload = {
-        "model": OLLAMA_MODEL,
+        "model": get_ollama_model(),
         "messages": [
             {"role": "system", "content": "You are a horror hook editor. Output JSON only."},
             {"role": "user", "content": prompt},
