@@ -7,6 +7,7 @@ Jadwal publish_at:
 
 import json
 import os
+import re
 from datetime import datetime, timedelta, timezone
 from engine.utils import get_logger, require_env, load_settings
 
@@ -108,6 +109,86 @@ def _amplify_title(title: str, niche: str, language: str) -> str:
     new_title = f"{prefix} {title}"
     return new_title[:100]  # YouTube max title length
 
+
+def _dedupe_keep_order(items: list[str]) -> list[str]:
+    return list(dict.fromkeys(item for item in items if item))
+
+
+def _normalize_hashtag(tag: str) -> str:
+    text = str(tag or "").strip()
+    if not text:
+        return ""
+    text = text.lstrip("#")
+    text = re.sub(r"[^0-9A-Za-z_]+", "", text)
+    if not text:
+        return ""
+    return f"#{text[:40].lower()}"
+
+
+def _extract_hashtags(text: str) -> list[str]:
+    return [match.lower() for match in re.findall(r"#\w+", text or "")]
+
+
+def _build_hashtag_pool(script_tags: list[str], extra_tags: list[str], profile: str) -> list[str]:
+    normalized = [
+        _normalize_hashtag(tag)
+        for tag in _dedupe_keep_order(list(script_tags or []) + list(extra_tags or []))
+    ]
+    hashtags = _dedupe_keep_order(normalized)
+    if profile == "shorts" and "#shorts" not in hashtags:
+        hashtags.insert(0, "#shorts")
+    return hashtags
+
+
+def _select_title_hashtags(hashtags: list[str], profile: str) -> list[str]:
+    non_shorts = [tag for tag in hashtags if tag != "#shorts"]
+    selected = non_shorts[:1]
+    if profile == "shorts" and "#shorts" in hashtags:
+        selected.append("#shorts")
+    else:
+        selected.extend(non_shorts[1:2])
+    return _dedupe_keep_order(selected[:2])
+
+
+def _append_hashtags_to_title(title: str, hashtags: list[str], max_len: int = 100) -> str:
+    title = (title or "").strip()
+    if not title or not hashtags:
+        return title[:max_len]
+
+    existing = set(_extract_hashtags(title))
+    suffix_tags = [tag for tag in hashtags if tag.lower() not in existing]
+    if not suffix_tags:
+        return title[:max_len]
+
+    suffix = " " + " ".join(suffix_tags)
+    if len(title) + len(suffix) <= max_len:
+        return f"{title}{suffix}"
+
+    allowed_title_len = max_len - len(suffix)
+    if allowed_title_len <= 0:
+        return " ".join(suffix_tags)[:max_len]
+
+    trimmed = title[:allowed_title_len].rstrip()
+    if allowed_title_len >= 4 and len(trimmed) < len(title):
+        trimmed = trimmed[:max(allowed_title_len - 3, 1)].rstrip() + "..."
+    return f"{trimmed}{suffix}"[:max_len]
+
+
+def _append_hashtags_to_description(description: str, hashtags: list[str], limit: int = 5) -> str:
+    description = (description or "").strip()
+    if not hashtags:
+        return description
+
+    existing = set(_extract_hashtags(description))
+    suffix_tags = [tag for tag in hashtags if tag.lower() not in existing][:limit]
+    if not suffix_tags:
+        return description
+
+    hashtag_line = " ".join(suffix_tags)
+    if not description:
+        return hashtag_line
+    return f"{description}\n\n{hashtag_line}"
+
 PRIME_TIME_WIB = {
     "id": 17,
     "en": 8,
@@ -152,6 +233,13 @@ def generate(script_data: dict, channel: dict, profile: str = "shorts") -> dict:
     settings    = load_settings()
     upload_conf = settings.get("upload", {})
 
+    # Hashtag pool dipakai untuk title, description, dan tag API.
+    script_tags  = script_data.get("tags", [])
+    extra_tags   = EXTRA_TAGS.get((niche, language, profile), [])
+    hashtag_pool = _build_hashtag_pool(script_tags, extra_tags, profile)
+    title_tags   = _select_title_hashtags(hashtag_pool, profile)
+    desc_tags    = hashtag_pool[:5]
+
     # Judul
     title = script_data.get("title", "").strip()
     if len(title) > 100:
@@ -159,6 +247,7 @@ def generate(script_data: dict, channel: dict, profile: str = "shorts") -> dict:
 
     # ── Psychological CTR triggers ───────────────────────────────────────────
     title = _amplify_title(title, niche, language)
+    title = _append_hashtags_to_title(title, title_tags)
     logger.info(f"[{ch_id}] Title (amplified): {title}")
 
     # Deskripsi
@@ -170,10 +259,9 @@ def generate(script_data: dict, channel: dict, profile: str = "shorts") -> dict:
     if profile == "long_form" and script_data.get("chapters"):
         chapters_text = "\n\n" + "\n".join(script_data["chapters"])
     description = f"{base_desc}{chapters_text}{cta}"
+    description = _append_hashtags_to_description(description, desc_tags)
 
     # Tags
-    script_tags = script_data.get("tags", [])
-    extra_tags  = EXTRA_TAGS.get((niche, language, profile), [])
     all_tags    = list(dict.fromkeys(script_tags + extra_tags))
     all_tags    = [t.lstrip("#") for t in all_tags]
     final_tags  = []
