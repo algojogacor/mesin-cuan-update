@@ -145,7 +145,7 @@ def _next_stage(job: dict) -> str | None:
     return None
 
 
-def _log_eta_snapshot(estimator: SmartETAEstimator, jobs: list[dict]) -> None:
+def _log_eta_snapshot(estimator: SmartETAEstimator, jobs: list[dict], full: bool = False) -> None:
     snapshot = estimator.build_snapshot(jobs, workers=PIPELINE_STAGE_WORKERS)
     total = snapshot["total"]
     completed_jobs = len([job for job in jobs if job.get("status") == "completed"])
@@ -161,8 +161,28 @@ def _log_eta_snapshot(estimator: SmartETAEstimator, jobs: list[dict]) -> None:
         format_eta(total["slow"]),
     )
 
-    for job in jobs:
-        if job.get("status") in ("completed", "failed"):
+    if full:
+        jobs_to_log = [
+            job for job in jobs
+            if job.get("status") not in ("completed", "failed")
+        ]
+    else:
+        jobs_to_log = [
+            job for job in jobs
+            if job.get("current_stage") and job.get("status") == "running"
+        ]
+        if not jobs_to_log:
+            next_job = next(
+                (
+                    job for job in sorted(jobs, key=lambda item: item["batch_index"])
+                    if job.get("status") not in ("completed", "failed")
+                ),
+                None,
+            )
+            jobs_to_log = [next_job] if next_job else []
+
+    for job in jobs_to_log:
+        if not job:
             continue
         eta = snapshot["per_video"].get(job["job_id"], {})
         logger.info(
@@ -908,7 +928,7 @@ def run_campaign(target_channel_id=None, dry_run=False, skip_qc=False):
     last_eta_log = 0.0
 
     try:
-        _log_eta_snapshot(estimator, jobs)
+        _log_eta_snapshot(estimator, jobs, full=True)
         last_eta_log = time.time()
 
         while True:
@@ -930,7 +950,7 @@ def run_campaign(target_channel_id=None, dry_run=False, skip_qc=False):
 
             if not done:
                 now = time.time()
-                if now - last_eta_log >= 30:
+                if now - last_eta_log >= 60:
                     _log_eta_snapshot(estimator, jobs)
                     last_eta_log = now
                 continue
