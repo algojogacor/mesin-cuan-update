@@ -48,6 +48,14 @@ EXTRA_TAGS = {
     ],
 }
 
+CHANNEL_TITLE_HASHTAGS = {
+    "ch_id_horror": ["#faktahoror", "#shorts"],
+    "ch_horror_id": ["#faktahoror", "#shorts"],
+    "ch_id_psych": ["#faktapsikologi", "#shorts"],
+    "ch_en_horror": ["#horrorfacts", "#shorts"],
+    "ch_en_psych": ["#psychologyfacts", "#shorts"],
+}
+
 # ─── Psychological Title Triggers ─────────────────────────────────────────────
 # CTR psychology: curiosity gap, urgency, social proof, fear
 
@@ -140,14 +148,38 @@ def _build_hashtag_pool(script_tags: list[str], extra_tags: list[str], profile: 
     return hashtags
 
 
-def _select_title_hashtags(hashtags: list[str], profile: str) -> list[str]:
+def _select_title_hashtags(
+    channel_id: str,
+    hashtags: list[str],
+    profile: str,
+    niche: str,
+    language: str,
+) -> list[str]:
+    channel_specific = [
+        _normalize_hashtag(tag)
+        for tag in CHANNEL_TITLE_HASHTAGS.get(channel_id, [])
+    ]
+    channel_specific = _dedupe_keep_order(channel_specific)
+    if len(channel_specific) >= 2:
+        return channel_specific[:2]
+
     non_shorts = [tag for tag in hashtags if tag != "#shorts"]
     selected = non_shorts[:1]
     if profile == "shorts" and "#shorts" in hashtags:
         selected.append("#shorts")
     else:
         selected.extend(non_shorts[1:2])
-    return _dedupe_keep_order(selected[:2])
+
+    fallback_pairs = {
+        ("horror_facts", "id"): ["#faktahoror", "#shorts"],
+        ("horror_facts", "en"): ["#horrorfacts", "#shorts"],
+        ("psychology", "id"): ["#faktapsikologi", "#shorts"],
+        ("psychology", "en"): ["#psychologyfacts", "#shorts"],
+    }
+    if len(selected) < 2:
+        selected.extend(fallback_pairs.get((niche, language), []))
+
+    return _dedupe_keep_order([_normalize_hashtag(tag) for tag in selected])[:2]
 
 
 def _append_hashtags_to_title(title: str, hashtags: list[str], max_len: int = 100) -> str:
@@ -237,7 +269,7 @@ def generate(script_data: dict, channel: dict, profile: str = "shorts") -> dict:
     script_tags  = script_data.get("tags", [])
     extra_tags   = EXTRA_TAGS.get((niche, language, profile), [])
     hashtag_pool = _build_hashtag_pool(script_tags, extra_tags, profile)
-    title_tags   = _select_title_hashtags(hashtag_pool, profile)
+    title_tags   = _select_title_hashtags(ch_id, hashtag_pool, profile, niche, language)
     desc_tags    = hashtag_pool[:5]
 
     # Judul
