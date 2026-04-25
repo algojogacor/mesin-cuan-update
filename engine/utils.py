@@ -80,7 +80,8 @@ def load_prompt(niche: str, language: str, profile: str = "shorts") -> str:
 
 # ─── File & Path Helpers ──────────────────────────────────────────────────────
 def timestamp() -> str:
-    return datetime.now().strftime("%Y%m%d_%H%M%S")
+    # Microseconds menghindari tabrakan nama file saat pipeline berjalan paralel.
+    return datetime.now().strftime("%Y%m%d_%H%M%S_%f")
 
 
 def channel_data_path(channel_id: str, subfolder: str) -> str:

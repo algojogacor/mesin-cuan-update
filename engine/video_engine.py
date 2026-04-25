@@ -374,8 +374,19 @@ def _ass_timestamp(seconds: float) -> str:
 #  PUBLIC API
 # ══════════════════════════════════════════════════════════════════════════════
 
+def prepare_transcript(audio_path: str, profile: str = "shorts") -> list[dict]:
+    """Public helper agar whisper bisa dijalankan di stage prep sebelum render."""
+    min_seg_dur = (
+        WHISPER_MIN_SEG_DUR_LONGFORM
+        if profile == "long_form"
+        else WHISPER_MIN_SEG_DUR_SHORTS
+    )
+    return _transcribe_audio(audio_path, min_seg_dur=min_seg_dur)
+
+
 def render(script_data: dict, audio_path: str, footage: any,
-           channel: dict, profile: str = "shorts") -> str:
+           channel: dict, profile: str = "shorts",
+           transcript_sentences: list[dict] | None = None) -> str:
     """
     Entry point render. Dispatch ke _render_shorts atau _render_long_form
     berdasarkan profile. Return path file video output.
@@ -392,9 +403,27 @@ def render(script_data: dict, audio_path: str, footage: any,
 
     try:
         if profile == "long_form":
-            _render_long_form(script_data, audio_path, footage, ch_id, niche, out_path, tmp_dir)
+            _render_long_form(
+                script_data,
+                audio_path,
+                footage,
+                ch_id,
+                niche,
+                out_path,
+                tmp_dir,
+                transcript_sentences=transcript_sentences,
+            )
         else:
-            _render_shorts(script_data, audio_path, footage, ch_id, niche, out_path, tmp_dir)
+            _render_shorts(
+                script_data,
+                audio_path,
+                footage,
+                ch_id,
+                niche,
+                out_path,
+                tmp_dir,
+                transcript_sentences=transcript_sentences,
+            )
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
@@ -407,7 +436,8 @@ def render(script_data: dict, audio_path: str, footage: any,
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _render_shorts(script_data: dict, audio_path: str, footage_paths: list,
-                   ch_id: str, niche: str, out_path: str, tmp_dir: str):
+                   ch_id: str, niche: str, out_path: str, tmp_dir: str,
+                   transcript_sentences: list[dict] | None = None):
     from engine import music_engine, sfx_engine
 
     settings  = load_settings()
@@ -422,13 +452,6 @@ def _render_shorts(script_data: dict, audio_path: str, footage_paths: list,
     # Whisper (CPU transcription) dan validasi footage path tidak saling bergantung.
     # Keduanya hanya butuh audio_path dan footage_paths yang sudah tersedia.
     # Jalankan paralel untuk mempersingkat waktu tunggu sebelum Ken Burns render.
-    def _run_transcribe():
-        try:
-            return _transcribe_audio(audio_path, min_seg_dur=WHISPER_MIN_SEG_DUR_SHORTS)
-        except Exception as exc:
-            logger.error(f"[{ch_id}] Whisper transkripsi gagal: {exc}")
-            return []  # Fallback: subtitle kosong, pipeline tetap jalan
-
     def _run_validate_footage():
         """Validasi dan filter footage_paths — hanya operasi I/O ringan, bukan encode."""
         try:
@@ -440,13 +463,30 @@ def _render_shorts(script_data: dict, audio_path: str, footage_paths: list,
             logger.warning(f"[{ch_id}] Validasi footage gagal ({exc}), gunakan list original")
             return footage_paths
 
-    logger.info(f"[{ch_id}] [PARALEL-1] Mulai Whisper + validasi footage secara paralel")
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        fut_transcribe = executor.submit(_run_transcribe)
-        fut_footage    = executor.submit(_run_validate_footage)
-        sentences      = fut_transcribe.result()   # Tunggu Whisper selesai
-        valid_footage  = fut_footage.result()      # Tunggu validasi selesai
-    logger.info(f"[{ch_id}] [PARALEL-1] Selesai: {len(sentences)} segmen | {len(valid_footage)} footage valid")
+    if transcript_sentences is not None:
+        sentences = transcript_sentences
+        valid_footage = _run_validate_footage()
+        logger.info(
+            f"[{ch_id}] [PARALEL-1] Whisper sudah disiapkan di stage prep "
+            f"({len(sentences)} segmen) | {len(valid_footage)} footage valid"
+        )
+    else:
+        def _run_transcribe():
+            try:
+                return _transcribe_audio(audio_path, min_seg_dur=WHISPER_MIN_SEG_DUR_SHORTS)
+            except Exception as exc:
+                logger.error(f"[{ch_id}] Whisper transkripsi gagal: {exc}")
+                return []  # Fallback: subtitle kosong, pipeline tetap jalan
+
+        logger.info(f"[{ch_id}] [PARALEL-1] Mulai Whisper + validasi footage secara paralel")
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            fut_transcribe = executor.submit(_run_transcribe)
+            fut_footage    = executor.submit(_run_validate_footage)
+            sentences      = fut_transcribe.result()
+            valid_footage  = fut_footage.result()
+        logger.info(
+            f"[{ch_id}] [PARALEL-1] Selesai: {len(sentences)} segmen | {len(valid_footage)} footage valid"
+        )
 
     # ══ OPTIMASI 2: Music Selection paralel dengan Ken Burns render ═══════════
     # music selection (build_music_plan) hanya butuh script_data, niche, audio_dur
@@ -562,7 +602,8 @@ def _render_shorts(script_data: dict, audio_path: str, footage_paths: list,
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _render_long_form(script_data: dict, audio_path: str, footage: dict,
-                      ch_id: str, niche: str, out_path: str, tmp_dir: str):
+                      ch_id: str, niche: str, out_path: str, tmp_dir: str,
+                      transcript_sentences: list[dict] | None = None):
     from engine import music_engine, sfx_engine
 
     settings    = load_settings()
@@ -614,7 +655,11 @@ def _render_long_form(script_data: dict, audio_path: str, footage: dict,
     _replace_video_audio(video_synced_path, sfx_audio_path, video_with_audio_path)
 
     # Step 7-10: Subtitle + Splash + Finishing + Loudnorm
-    sentences      = _transcribe_audio(audio_path, min_seg_dur=WHISPER_MIN_SEG_DUR_LONGFORM)
+    sentences = (
+        transcript_sentences
+        if transcript_sentences is not None
+        else _transcribe_audio(audio_path, min_seg_dur=WHISPER_MIN_SEG_DUR_LONGFORM)
+    )
     subtitle_path  = _generate_ass_subtitle(sentences, ch_id, width, height, niche)
     base, ext      = os.path.splitext(out_path)
     subtitled_path = f"{base}_sub{ext}"
