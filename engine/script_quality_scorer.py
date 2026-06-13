@@ -31,18 +31,18 @@ import re
 
 import requests
 
-from engine.utils import get_logger, get_ollama_model
+from engine.utils import get_logger, get_provider_config
 
 logger = get_logger("script_quality_scorer")
 
 # ── Constants ─────────────────────────────────────────────────────────────────
-OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
-QWEN_API_BASE   = os.environ.get("QWEN_API_BASE", "http://localhost:9000/v1")
-QWEN_MODEL      = os.environ.get("QWEN_MODEL",      "qwen3-235b-a22b")
+# QWEN_* dibaca sebagai alias PROVIDER_A_* (backward-compat)
+QWEN_API_BASE   = os.environ.get("PROVIDER_A_BASE_URL", os.environ.get("QWEN_API_BASE", ""))
+QWEN_MODEL      = os.environ.get("PROVIDER_A_MODEL",    os.environ.get("QWEN_MODEL",     "qwen-plus"))
 QWEN_MODEL_CANDIDATES = [
     m.strip() for m in os.environ.get(
-        "QWEN_MODEL_CANDIDATES",
-        "qwen3-235b-a22b,qwen3-plus,qwen2.5-72b-instruct,qwen3-30b-a3b,qwen3-turbo"
+        "PROVIDER_A_MODEL_CANDIDATES",
+        os.environ.get("QWEN_MODEL_CANDIDATES", "qwen-plus")
     ).split(",")
     if m.strip()
 ]
@@ -230,113 +230,111 @@ Return ONLY valid JSON, no markdown, no extra text:
 
 def _build_provider_order(scorer_provider: str) -> list[str]:
     """
-    Build scorer waterfall order based on requested provider.
-    Groq is always last resort — never primary scorer.
+    Build scorer waterfall order.
+    scorer_provider: "ollama" (alias Provider A) | "qwen" (alias Provider B) | "a" | "b"
+    Groq always last resort.
     """
-    if scorer_provider == "qwen" and os.getenv("QWEN_API_KEY"):
-        return ["qwen", "ollama", "groq"]
-    elif scorer_provider == "ollama":
-        if os.getenv("QWEN_API_KEY"):
-            return ["ollama", "qwen", "groq"]
-        return ["ollama", "groq"]
-    # Fallback: whatever is available
-    order = ["ollama"]
-    if os.getenv("QWEN_API_KEY"):
-        order.append("qwen")
+    cfg_a = get_provider_config("a")
+    cfg_b = get_provider_config("b")
+    has_a = bool(cfg_a["api_key"])
+    has_b = bool(cfg_b["api_key"])
+
+    # "ollama" = generator = Provider A → scorer = Provider B
+    # "qwen"   = scorer    = Provider A → scorer = Provider A (cross-score dari generator B)
+    if scorer_provider in ("ollama", "b"):
+        order = (["ollama"] if has_a else []) + (["qwen"] if has_b else [])
+    else:
+        order = (["qwen"] if has_b else []) + (["ollama"] if has_a else [])
+
     order.append("groq")
-    return order
+    return order if order else ["groq"]
 
 
 def _call_provider(provider: str, prompt: str) -> str:
-    if provider == "qwen":
-        return _call_qwen(prompt)
-    elif provider == "ollama":
-        return _call_ollama(prompt)
+    if provider in ("qwen", "a"):
+        return _call_provider_a(prompt)
+    elif provider in ("ollama", "b"):
+        return _call_provider_b(prompt)
     elif provider == "groq":
         return _call_groq(prompt)
     raise ValueError(f"Unknown provider: {provider}")
 
 
-def _call_qwen(prompt: str) -> str:
-    api_key = os.getenv("QWEN_API_KEY", "")
-    if not api_key:
-        raise RuntimeError("QWEN_API_KEY tidak tersedia")
-
-    for model_name in _qwen_models_to_try():
-        session = requests.Session()
-        session.trust_env = False
-        try:
-            resp = session.post(
-                f"{QWEN_API_BASE.rstrip('/')}/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": model_name,
-                    "messages": [
-                        {
-                            "role": "system",
-                            "content": "You are a strict content quality evaluator. Output JSON only.",
-                        },
-                        {"role": "user", "content": prompt},
-                    ],
-                    # Scorer: deterministik (Qwen: no seed/top_k support)
-                    "temperature":       0.15,
-                    "top_p":             0.90,
-                    "frequency_penalty": 0.0,   # repeat_penalty 1.0 = no penalty
-                    "max_tokens":        SCORER_MAX_TOKENS,
-                },
-                timeout=60,
-            )
-            resp.raise_for_status()
-            content = resp.json()["choices"][0]["message"]["content"].strip()
-            if content:
-                logger.debug(f"[scorer] Qwen ({model_name}) responded")
-                return content
-        except requests.HTTPError as exc:
-            status = exc.response.status_code if exc.response is not None else None
-            if status in (400, 404):
-                continue  # Try next model
-            raise
-        except Exception:
-            raise
-        finally:
-            session.close()
-
-    raise RuntimeError("Semua Qwen model gagal untuk scoring")
+def _call_provider_a(prompt: str) -> str:
+    """Provider A scorer — OpenAI-compatible (PROVIDER_A_* config)."""
+    cfg = get_provider_config("a")
+    return _openai_compat_score(cfg, prompt, label="Provider-A")
 
 
-def _call_ollama(prompt: str) -> str:
-    payload = {
-        "model": get_ollama_model(),
-        "messages": [
-            {
-                "role": "system",
-                "content": "You are a strict content quality evaluator. Output JSON only.",
-            },
-            {"role": "user", "content": prompt},
-        ],
-        "stream": False,
-        "format": "json",
-        "options": {
-            # Scorer: deterministik, konsisten, bukan kreatif
-            "temperature":    0.15,
-            "top_p":          0.90,
-            "top_k":          20,
-            "repeat_penalty": 1.0,
-            "num_predict":    SCORER_MAX_TOKENS,
-            "num_ctx":        4096,
-            "seed":           42,   # Fixed seed: skor konsisten antar run
-        },
+def _call_provider_b(prompt: str) -> str:
+    """Provider B scorer — OpenAI-compatible (PROVIDER_B_* config)."""
+    cfg = get_provider_config("b")
+    return _openai_compat_score(cfg, prompt, label="Provider-B")
+
+
+# Backward-compat aliases
+_call_qwen   = _call_provider_a
+_call_ollama = _call_provider_b
+
+
+def _openai_compat_score(cfg: dict, prompt: str, label: str = "Provider") -> str:
+    """Generic OpenAI-compatible scoring call."""
+    base_url   = cfg["base_url"]
+    api_key    = cfg["api_key"]
+    candidates = cfg["candidates"]
+
+    if not base_url or not api_key:
+        raise RuntimeError(f"{label}: base_url atau api_key tidak dikonfigurasi")
+
+    session = requests.Session()
+    session.trust_env = False
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type":  "application/json",
     }
-    resp = requests.post(
-        f"{OLLAMA_BASE_URL}/api/chat",
-        json=payload,
-        timeout=120,
-    )
-    resp.raise_for_status()
-    return resp.json().get("message", {}).get("content", "")
+
+    try:
+        for model_name in candidates:
+            try:
+                resp = session.post(
+                    f"{base_url.rstrip('/')}/chat/completions",
+                    headers=headers,
+                    json={
+                        "model": model_name,
+                        "messages": [
+                            {
+                                "role": "system",
+                                "content": "You are a strict content quality evaluator. Output JSON only.",
+                            },
+                            {"role": "user", "content": prompt},
+                        ],
+                        "temperature": 0.15,
+                        "top_p":       0.90,
+                        "max_tokens":  SCORER_MAX_TOKENS,
+                        "stream":      False,
+                    },
+                    timeout=120,
+                )
+                resp.raise_for_status()
+                content = (
+                    resp.json()
+                    .get("choices", [{}])[0]
+                    .get("message", {})
+                    .get("content", "")
+                    .strip()
+                )
+                if content:
+                    logger.debug(f"[scorer] {label} ({model_name}) responded")
+                    return content
+            except requests.HTTPError as exc:
+                status = exc.response.status_code if exc.response is not None else None
+                if status in (400, 404):
+                    continue  # coba model berikutnya
+                raise
+    finally:
+        session.close()
+
+    raise RuntimeError(f"{label}: semua model gagal untuk scoring")
 
 
 def _call_groq(prompt: str) -> str:

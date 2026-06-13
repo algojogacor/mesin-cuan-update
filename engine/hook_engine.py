@@ -190,7 +190,7 @@ Return JSON only:
             "stream": False,
             "format": "json",
         }
-        resp = requests.post(f"{OLLAMA_BASE_URL}/api/chat", json=payload, timeout=30)
+        resp = requests.post(f"{OLLAMA_BASE_URL}/chat/completions", headers={"Authorization": f'Bearer {os.environ.get("OLLAMA_API_KEY")}'} if os.environ.get("OLLAMA_API_KEY") else {}, json=payload, timeout=30)
         resp.raise_for_status()
         return json.loads(resp.json().get("message", {}).get("content", ""))
     except Exception as exc:
@@ -432,7 +432,7 @@ def _call_hook_provider(provider: str, prompt: str) -> str:
             "seed":           42,
         },
     }
-    resp = requests.post(f"{OLLAMA_BASE_URL}/api/chat", json=payload, timeout=45)
+    resp = requests.post(f"{OLLAMA_BASE_URL}/chat/completions", headers={"Authorization": f'Bearer {os.environ.get("OLLAMA_API_KEY")}'} if os.environ.get("OLLAMA_API_KEY") else {}, json=payload, timeout=45)
     resp.raise_for_status()
     return resp.json().get("message", {}).get("content", "")
 

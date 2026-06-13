@@ -18,7 +18,7 @@ import os
 from datetime import datetime
 from typing import Optional
 
-from engine.utils import get_logger, save_json, get_ollama_model
+from engine.utils import get_logger, save_json, get_provider_config, get_provider_model
 from engine.state_manager import get_videos_for_channel
 
 logger = get_logger("series_engine")
@@ -369,35 +369,44 @@ Format WAJIB JSON tunggal murni (tanpa tag markdown ```json ):
 """
     try:
         import requests
-        OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
-        
-        payload = {
-            "model": get_ollama_model(),
-            "messages": [{"role": "user", "content": prompt}],
-            "stream": False,
-            "format": "json",
-            "options": {"temperature": 1.0, "top_p": 0.98, "top_k": 80}
+        cfg_a = get_provider_config("a")
+        model_a = get_provider_model("a")
+        headers_a = {
+            "Authorization": f"Bearer {cfg_a['api_key']}",
+            "Content-Type": "application/json",
         }
-        
-        resp = requests.post(f"{OLLAMA_BASE_URL}/api/chat", json=payload, timeout=300)
+        payload_a = {
+            "model": model_a,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 1.0,
+            "top_p": 0.98,
+            "response_format": {"type": "json_object"},
+        }
+
+        resp = requests.post(
+            f"{cfg_a['base_url']}/chat/completions",
+            headers=headers_a,
+            json=payload_a,
+            timeout=300,
+        )
         resp.raise_for_status()
-        
-        content = resp.json().get("message", {}).get("content", "").strip()
+
+        content = resp.json()["choices"][0]["message"]["content"].strip()
         from engine.script_engine import _clean_raw_json
-        
+
         cleaned = _clean_raw_json(content)
         series_data = json.loads(cleaned)
-        
+
         series_data["active"] = True
         series_data["viral_threshold_for_part2"] = 1000
-        
+
         if len(series_data.get("items", [])) > 0:
             add_series(ch_id, series_data)
-            logger.info(f"[{ch_id}] ✅ Berhasil auto-invent series via Ollama: {series_data['id']}")
+            logger.info(f"[{ch_id}] ✅ Berhasil auto-invent series via Provider-A ({model_a}): {series_data['id']}")
             return True
-            
+
     except Exception as exc:
-        logger.warning(f"[{ch_id}] Gagal auto-invent series via Ollama, mencoba opsi terakhir (Groq): {exc}")
+        logger.warning(f"[{ch_id}] Gagal auto-invent series via Provider-A, mencoba Groq sebagai fallback: {exc}")
         try:
             from groq import Groq
             client = Groq(api_key=require_env("GROQ_API_KEY"))

@@ -11,11 +11,11 @@ from engine.utils import get_logger, load_settings
 
 logger = get_logger("cleanup_engine")
 
-# Folder yang dibersihkan (bukan output — itu video final)
-CLEANUP_FOLDERS = ["audio", "footage", "subtitles", "scripts", "music"]
+# Folder yang dibersihkan (termasuk output karena sudah di-upload ke GDrive)
+CLEANUP_FOLDERS = ["audio", "footage", "subtitles", "scripts", "music", "output"]
 
 # Hapus file lebih dari berapa jam
-MAX_AGE_HOURS = 24
+MAX_AGE_HOURS = 0
 
 
 def run(dry_run: bool = False):

@@ -246,29 +246,71 @@ def require_env(key: str) -> str:
     return val
 
 
-# ─── Ollama Model Rotator ───────────────────────────────────────────────────
-def get_ollama_model() -> str:
-    import random
-    logger = get_logger("ollama_rotator")
+# ─── Dual Provider System (OpenAI-compatible) ───────────────────────────────
+#
+# PROVIDER_A = Generator utama (default: PROVIDER_A_* env vars)
+# PROVIDER_B = Scorer / cross-evaluator (default: PROVIDER_B_* env vars)
+#
+# Nama lama "ollama" dan "qwen" di-alias ke slot baru agar backward-compatible.
 
-    preferred = os.getenv("OLLAMA_MODEL", "").strip()
-    if preferred:
-        logger.info(f"Ollama Model selected from OLLAMA_MODEL: {preferred}")
-        return preferred
+def get_provider_config(slot: str) -> dict:
+    """
+    Return config dict untuk provider slot.
+    slot: "a" | "b" | "ollama" (alias "a") | "qwen" (alias "b")
 
-    candidates = os.getenv("OLLAMA_MODEL_CANDIDATES", "").strip()
-    if candidates:
-        models = [m.strip() for m in candidates.split(",") if m.strip()]
+    Returns:
+        {
+            "base_url": str,
+            "api_key":  str,
+            "model":    str,
+            "candidates": list[str],
+        }
+    """
+    # Normalisasi alias lama ke slot baru
+    _slot = {"ollama": "a", "qwen": "b"}.get(slot.lower(), slot.lower())
+
+    if _slot == "a":
+        base_url    = os.getenv("PROVIDER_A_BASE_URL", os.getenv("QWEN_API_BASE", "")).strip()
+        api_key     = os.getenv("PROVIDER_A_API_KEY",  os.getenv("QWEN_API_KEY",  "")).strip()
+        model       = os.getenv("PROVIDER_A_MODEL",    os.getenv("QWEN_MODEL",    "qwen-plus")).strip()
+        candidates  = os.getenv("PROVIDER_A_MODEL_CANDIDATES",
+                                os.getenv("QWEN_MODEL_CANDIDATES", model)).strip()
+    elif _slot == "b":
+        base_url    = os.getenv("PROVIDER_B_BASE_URL", os.getenv("QWEN_API_BASE", "")).strip()
+        api_key     = os.getenv("PROVIDER_B_API_KEY",  os.getenv("QWEN_API_KEY",  "")).strip()
+        model       = os.getenv("PROVIDER_B_MODEL",    os.getenv("QWEN_MODEL",    "deepseek-chat")).strip()
+        candidates  = os.getenv("PROVIDER_B_MODEL_CANDIDATES",
+                                os.getenv("QWEN_MODEL_CANDIDATES", model)).strip()
     else:
-        models = [
-            # Sudah dites via /api/chat: aktif, non-coder, dan fokus text generation kreatif.
-            "minimax-m2.7:cloud",
-            "qwen3.5:397b-cloud",
-            "deepseek-v3.1:671b-cloud",
-            "glm-4.6:cloud",
-            "gemma4:31b-cloud",
-            "gpt-oss:120b-cloud",
-        ]
-    chosen = random.choice(models)
-    logger.info(f"Ollama Model selected: {chosen}")
+        raise ValueError(f"Provider slot tidak valid: '{slot}'. Gunakan 'a' atau 'b'.")
+
+    candidate_list = [m.strip() for m in candidates.split(",") if m.strip()] or [model]
+    return {
+        "base_url":   base_url,
+        "api_key":    api_key,
+        "model":      model,
+        "candidates": candidate_list,
+    }
+
+
+def get_provider_model(slot: str = "a") -> str:
+    """Return model name untuk provider slot tertentu."""
+    import random
+    logger = get_logger("provider_rotator")
+    cfg = get_provider_config(slot)
+    candidates = cfg["candidates"]
+    if len(candidates) == 1:
+        chosen = candidates[0]
+    else:
+        chosen = random.choice(candidates)
+    logger.info(f"Provider-{slot.upper()} Model selected: {chosen}")
     return chosen
+
+
+# Backward-compat alias — kode lama yang masih panggil get_ollama_model()
+# akan otomatis pakai PROVIDER_A (slot "a")
+def get_ollama_model() -> str:
+    logger = get_logger("provider_rotator")
+    model = get_provider_model("a")
+    logger.info(f"Ollama Model selected from OLLAMA_MODEL: {model}")
+    return model

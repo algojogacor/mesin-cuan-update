@@ -355,7 +355,7 @@ def _generate_text_from_style(
 ) -> str | None:
     """
     Gunakan LLM untuk membuat teks thumbnail berdasarkan style pattern + konteks judul.
-    Provider: Qwen primary → Ollama fallback. Groq tidak dipakai di sini.
+    Provider: Provider A primary → Provider B fallback.
     """
     pattern     = style.get("text_pattern", "")
     description = style.get("description", "")
@@ -387,17 +387,16 @@ Rules:
 - Do NOT repeat the examples verbatim — create a FRESH variation
 - Return ONLY the text, nothing else. No quotes, no explanation."""
 
-    # Provider order: Qwen primary → Ollama fallback (no Groq)
-    providers = ["qwen", "ollama"]
-    if not os.getenv("QWEN_API_KEY"):
-        providers = ["ollama"]
+    providers = []
+    from engine.utils import get_provider_config
+    if get_provider_config("a")["api_key"]:
+        providers.append("a")
+    if get_provider_config("b")["api_key"]:
+        providers.append("b")
 
-    for provider in providers:
+    for slot in providers:
         try:
-            if provider == "qwen":
-                result = _qwen_generate(prompt)
-            else:
-                result = _ollama_generate(prompt)
+            result = _call_provider(slot, prompt)
 
             if result:
                 # Clean dan validasi
@@ -410,7 +409,7 @@ Rules:
                 return " ".join(words[:4])
 
         except Exception as exc:
-            logger.debug(f"[thumb_intel] {provider} text gen gagal: {exc}")
+            logger.debug(f"[thumb_intel] Provider-{slot.upper()} text gen gagal: {exc}")
 
     return None
 
@@ -453,16 +452,16 @@ Rules:
 - Patterns must work for viral short-form content
 - Return exactly 3 style objects"""
 
-    providers = ["qwen", "ollama"]
-    if not os.getenv("QWEN_API_KEY"):
-        providers = ["ollama"]
+    providers = []
+    from engine.utils import get_provider_config
+    if get_provider_config("a")["api_key"]:
+        providers.append("a")
+    if get_provider_config("b")["api_key"]:
+        providers.append("b")
 
-    for provider in providers:
+    for slot in providers:
         try:
-            if provider == "qwen":
-                raw = _qwen_generate(prompt)
-            else:
-                raw = _ollama_generate(prompt)
+            raw = _call_provider(slot, prompt)
 
             if not raw:
                 continue
@@ -480,11 +479,11 @@ Rules:
 
             styles = json.loads(cleaned)
             if isinstance(styles, list) and styles:
-                logger.info(f"[{ch_id}] Generated {len(styles)} new styles via {provider}")
+                logger.info(f"[{ch_id}] Generated {len(styles)} new styles via Provider-{slot.upper()}")
                 return styles[:3]
 
         except Exception as exc:
-            logger.debug(f"[thumb_intel] Style gen {provider} gagal: {exc}")
+            logger.debug(f"[thumb_intel] Style gen Provider-{slot.upper()} gagal: {exc}")
 
     logger.warning(f"[{ch_id}] Gagal generate style baru — library tidak di-expand")
     return []
@@ -492,17 +491,24 @@ Rules:
 
 # ─── Provider Calls (lightweight, no Groq) ───────────────────────────────────
 
-def _qwen_generate(prompt: str) -> str:
-    api_key = os.getenv("QWEN_API_KEY", "")
-    if not api_key:
-        raise RuntimeError("QWEN_API_KEY tidak tersedia")
+def _call_provider(slot: str, prompt: str) -> str:
+    from engine.utils import get_provider_config, get_provider_model
+    cfg = get_provider_config(slot)
+    base_url = cfg["base_url"]
+    api_key  = cfg["api_key"]
+    if not base_url or not api_key:
+        raise RuntimeError(f"Provider {slot.upper()} base_url atau api_key tidak dikonfigurasi di .env")
 
-    for model_name in _qwen_models_to_try():
+    last_error = None
+    preferred_model = get_provider_model(slot)
+    models_to_try = [preferred_model] + [m for m in cfg["candidates"] if m != preferred_model]
+
+    for model_name in models_to_try:
         session = requests.Session()
         session.trust_env = False
         try:
             resp = session.post(
-                f"{QWEN_API_BASE.rstrip('/')}/chat/completions",
+                f"{base_url.rstrip('/')}/chat/completions",
                 headers={
                     "Authorization": f"Bearer {api_key}",
                     "Content-Type": "application/json",
@@ -510,10 +516,9 @@ def _qwen_generate(prompt: str) -> str:
                 json={
                     "model": model_name,
                     "messages": [{"role": "user", "content": prompt}],
-                    # Thumbnail generator: creative but controlled (Qwen: no top_k/seed)
+                    # Thumbnail generator: creative but controlled
                     "temperature":       0.95,
                     "top_p":             0.98,
-                    "frequency_penalty": 0.50,  # ~repeat_penalty 1.1 di Ollama
                     "max_tokens":        200,
                 },
                 timeout=GEN_TIMEOUT,
@@ -522,46 +527,13 @@ def _qwen_generate(prompt: str) -> str:
             return resp.json()["choices"][0]["message"]["content"].strip()
         except requests.HTTPError as exc:
             status = exc.response.status_code if exc.response is not None else None
+            last_error = exc
             if status in (400, 404):
                 continue
             raise
+        except Exception as exc:
+            last_error = exc
         finally:
             session.close()
 
-    raise RuntimeError("Semua Qwen model gagal")
-
-
-def _ollama_generate(prompt: str) -> str:
-    payload = {
-        "model": get_ollama_model(),
-        "messages": [{"role": "user", "content": prompt}],
-        "stream": False,
-        "options": {
-            # Thumbnail generator: creative but controlled
-            "temperature":    0.75,
-            "top_p":          0.95,
-            "top_k":          45,
-            "repeat_penalty": 1.10,
-            "num_predict":    200,
-            "num_ctx":        2048,
-            "seed":           -1,
-        },
-    }
-    resp = requests.post(
-        f"{OLLAMA_BASE_URL}/api/chat",
-        json=payload,
-        timeout=GEN_TIMEOUT,
-    )
-    resp.raise_for_status()
-    return resp.json().get("message", {}).get("content", "").strip()
-
-
-def _qwen_models_to_try() -> list[str]:
-    models: list[str] = []
-    preferred = QWEN_MODEL.strip() if QWEN_MODEL else ""
-    if preferred:
-        models.append(preferred)
-    for model in QWEN_MODEL_CANDIDATES:
-        if model not in models:
-            models.append(model)
-    return models
+    raise RuntimeError(f"Provider {slot.upper()} gagal di semua model: {last_error}")

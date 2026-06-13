@@ -21,7 +21,7 @@ import requests
 
 from engine.retention_engine import get_topic_hints
 from engine.trending_engine import get_trending_topics
-from engine.utils import channel_data_path, get_logger, require_env, save_json, timestamp, get_ollama_model
+from engine.utils import channel_data_path, get_logger, require_env, save_json, timestamp, get_ollama_model, get_provider_config, get_provider_model
 
 logger = get_logger("topic_engine")
 
@@ -291,63 +291,67 @@ def _generate_candidates_via_ai(niche: str, language: str, hints=None,
         f"{hints_text}"
     )
 
-    # ── PRIORITAS 1: Qwen ─────────────────────────────────────────────────────
-    if os.getenv("QWEN_API_KEY"):
+    # ── PRIORITAS 1: Provider A ───────────────────────────────────────────────
+    cfg_a = get_provider_config("a")
+    if cfg_a["api_key"] and cfg_a["base_url"]:
         _sess = requests.Session()
         _sess.trust_env = False
         try:
-            qwen_timeout = int(os.environ.get("QWEN_TIMEOUT", "600"))
+            model_name = get_provider_model("a")
             resp = _sess.post(
-                f"{QWEN_API_BASE.rstrip('/')}/chat/completions",
+                f"{cfg_a['base_url'].rstrip('/')}/chat/completions",
                 headers={
-                    "Authorization": f"Bearer {os.getenv('QWEN_API_KEY', '')}",
+                    "Authorization": f"Bearer {cfg_a['api_key']}",
                     "Content-Type": "application/json",
                 },
                 json={
-                    "model": QWEN_MODEL,
+                    "model": model_name,
                     "messages": [{"role": "user", "content": prompt}],
                     "temperature": 0.85,
                     "top_p": 0.95,
-                    "frequency_penalty": 0.20,
                     "max_tokens": 400,
                 },
-                timeout=qwen_timeout,
+                timeout=120,
             )
             resp.raise_for_status()
             raw = resp.json()["choices"][0]["message"]["content"].strip()
             cleaned = raw.replace("```json", "").replace("```", "").strip()
             return _clean_topic_list(json.loads(cleaned))
         except Exception as exc:
-            logger.warning(f"Qwen topic failed: {exc} -> trying Ollama...")
+            logger.warning(f"Provider A topic failed: {exc} -> trying Provider B...")
         finally:
             _sess.close()
 
-    # ── PRIORITAS 2: Ollama (DeepSeek) ────────────────────────────────────────
-    try:
-        resp = requests.post(
-            f"{OLLAMA_BASE_URL}/api/chat",
-            json={
-                "model": get_ollama_model(),
-                "messages": [{"role": "user", "content": prompt}],
-                "stream": False,
-                "format": "json",
-                "options": {
+    # ── PRIORITAS 2: Provider B ───────────────────────────────────────────────
+    cfg_b = get_provider_config("b")
+    if cfg_b["api_key"] and cfg_b["base_url"]:
+        _sess = requests.Session()
+        _sess.trust_env = False
+        try:
+            model_name = get_provider_model("b")
+            resp = _sess.post(
+                f"{cfg_b['base_url'].rstrip('/')}/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {cfg_b['api_key']}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": model_name,
+                    "messages": [{"role": "user", "content": prompt}],
                     "temperature": 0.85,
                     "top_p": 0.95,
-                    "top_k": 40,
-                    "repeat_penalty": 1.1,
-                    "num_predict": 400,
-                    "num_ctx": 4096,
+                    "max_tokens": 400,
                 },
-            },
-            timeout=120,
-        )
-        resp.raise_for_status()
-        raw = resp.json().get("message", {}).get("content", "").strip()
-        cleaned = raw.replace("```json", "").replace("```", "").strip()
-        return _clean_topic_list(json.loads(cleaned))
-    except Exception as exc:
-        logger.warning(f"Ollama topic failed: {exc} -> trying Groq...")
+                timeout=120,
+            )
+            resp.raise_for_status()
+            raw = resp.json()["choices"][0]["message"]["content"].strip()
+            cleaned = raw.replace("```json", "").replace("```", "").strip()
+            return _clean_topic_list(json.loads(cleaned))
+        except Exception as exc:
+            logger.warning(f"Provider B topic failed: {exc} -> trying Groq...")
+        finally:
+            _sess.close()
 
     # ── FALLBACK: Groq ────────────────────────────────────────────────────────
     try:
@@ -597,67 +601,50 @@ def _build_topic_selector_prompt(channel: dict, candidate_pool: list[dict],
 
 
 def _topic_selector_provider_order() -> list[str]:
-    providers = ["ollama"]
-    if os.getenv("QWEN_API_KEY"):
-        providers.insert(0, "qwen")
+    providers = []
+    cfg_a = get_provider_config("a")
+    if cfg_a["api_key"] and cfg_a["base_url"]:
+        providers.append("provider_a")
+    cfg_b = get_provider_config("b")
+    if cfg_b["api_key"] and cfg_b["base_url"]:
+        providers.append("provider_b")
     return providers
 
 
 def _call_topic_selector(provider: str, prompt: str) -> str:
-    if provider == "qwen":
-        session = requests.Session()
-        session.trust_env = False
-        try:
-            resp = session.post(
-                f"{QWEN_API_BASE.rstrip('/')}/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {os.getenv('QWEN_API_KEY', '')}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": QWEN_MODEL,
-                    "messages": [
-                        {"role": "system", "content": "You are a viral topic strategist. Output JSON only."},
-                        {"role": "user", "content": prompt},
-                    ],
-                    # Selector: deterministik (Qwen: no seed/top_k support)
-                    "temperature":       0.20,
-                    "top_p":             0.90,
-                    "frequency_penalty": 0.0,
-                    "max_tokens":        300,
-                },
-                timeout=45,
-            )
-            resp.raise_for_status()
-            return resp.json()["choices"][0]["message"]["content"]
-        finally:
-            session.close()
+    slot = "a" if provider == "provider_a" else "b"
+    cfg = get_provider_config(slot)
+    base_url = cfg["base_url"]
+    api_key  = cfg["api_key"]
+    if not base_url or not api_key:
+        raise RuntimeError(f"Provider slot {slot.upper()} base_url atau api_key tidak dikonfigurasi di .env")
 
-    resp = requests.post(
-        f"{OLLAMA_BASE_URL}/api/chat",
-        json={
-            "model": get_ollama_model(),
-            "messages": [
-                {"role": "system", "content": "You are a viral topic strategist. Output JSON only."},
-                {"role": "user", "content": prompt},
-            ],
-            "stream": False,
-            "format": "json",
-            "options": {
-                # Selector: deterministik, konsisten
-                "temperature":    0.20,
-                "top_p":          0.90,
-                "top_k":          20,
-                "repeat_penalty": 1.0,
-                "num_predict":    300,
-                "num_ctx":        4096,
-                "seed":           42,
+    model = get_provider_model(slot)
+    session = requests.Session()
+    session.trust_env = False
+    try:
+        resp = session.post(
+            f"{base_url.rstrip('/')}/chat/completions",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
             },
-        },
-        timeout=45,
-    )
-    resp.raise_for_status()
-    return resp.json().get("message", {}).get("content", "")
+            json={
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": "You are a viral topic strategist. Output JSON only."},
+                    {"role": "user", "content": prompt},
+                ],
+                "temperature":       0.20,
+                "top_p":             0.90,
+                "max_tokens":        300,
+            },
+            timeout=45,
+        )
+        resp.raise_for_status()
+        return resp.json()["choices"][0]["message"]["content"]
+    finally:
+        session.close()
 
 
 def _parse_selector_json(raw: str) -> dict:

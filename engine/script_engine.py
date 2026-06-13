@@ -26,7 +26,7 @@ import concurrent.futures
 from copy import deepcopy
 from typing import Callable
 import requests
-from engine.utils import get_logger, require_env, load_prompt, timestamp, save_json, channel_data_path, get_ollama_model
+from engine.utils import get_logger, require_env, load_prompt, timestamp, save_json, channel_data_path, get_ollama_model, get_provider_config, get_provider_model
 
 # ── BARU: Imports untuk fitur Hook & Retention ─────────────────────────────────
 from engine.hook_engine import inject_hook
@@ -46,10 +46,11 @@ MAX_JSON_RETRY = 3
 ENABLE_AI_SCHEMA_REPAIR = os.environ.get("ENABLE_AI_SCHEMA_REPAIR", "1").lower() not in {"0", "false", "no"}
 AI_SCHEMA_REPAIR_MAX_CHARS = int(os.environ.get("AI_SCHEMA_REPAIR_MAX_CHARS", "18000"))
 
-# Ollama config
-OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
-QWEN_API_BASE   = os.environ.get("QWEN_API_BASE",   "http://localhost:9000/v1")
-QWEN_MODEL      = os.environ.get("QWEN_MODEL",      "qwen3-235b-a22b")
+# Provider config — dibaca langsung dari get_provider_config() saat runtime
+# sehingga perubahan .env langsung efektif tanpa restart (untuk testing).
+# QWEN_* tetap dibaca sebagai alias PROVIDER_A_* untuk backward-compat.
+QWEN_API_BASE   = os.environ.get("PROVIDER_A_BASE_URL", os.environ.get("QWEN_API_BASE",   ""))
+QWEN_MODEL      = os.environ.get("PROVIDER_A_MODEL",    os.environ.get("QWEN_MODEL",      "qwen-plus"))
 QWEN_MODEL_CANDIDATES = [
     m.strip() for m in os.environ.get(
         "QWEN_MODEL_CANDIDATES",
@@ -226,12 +227,16 @@ def review_hook_only(script_data: dict, channel: dict, profile: str = "shorts") 
 
 
 def _call_ai(system_prompt: str, user_message: str, profile: str = "shorts") -> dict:
-    primary_providers = [("DeepSeek/Ollama", lambda: _call_ollama(system_prompt, user_message, profile))]
-    if os.getenv("QWEN_API_KEY"):
+    # Provider-A (Qwen) untuk script generation
+    # Provider-B (DeepSeek) sebagai generator kedua (bukan scorer)
+    primary_providers = [
+        ("DeepSeek/Ollama", lambda: _call_provider_b(system_prompt, user_message, profile)),
+    ]
+    if os.getenv("QWEN_API_KEY") or os.getenv("PROVIDER_A_API_KEY"):
         primary_providers.append(("Qwen", lambda: _call_qwen(system_prompt, user_message, profile)))
     random.shuffle(primary_providers)
 
-    # Groq sebagai last-resort fallback saja; Gemini & Anthropic dihapus
+    # Groq sebagai last-resort fallback saja
     providers = primary_providers + [
         ("Groq", lambda: _call_groq(system_prompt, user_message, profile)),
     ]
@@ -241,11 +246,11 @@ def _call_ai(system_prompt: str, user_message: str, profile: str = "shorts") -> 
         logger.info(f"Trying {name}...")
         try:
             result = fn()
-            logger.info(f"✅ {name} berhasil")
+            logger.info(f"\u2705 {name} berhasil")
             return result
         except Exception as e:
             last_error = e
-            logger.warning(f"❌ {name} gagal: {e}")
+            logger.warning(f"\u274c {name} gagal: {e}")
             if name not in ("DeepSeek/Ollama", "Qwen"):
                 logger.info(f"Tunggu {PROVIDER_SWITCH_DELAY}s sebelum provider berikutnya...")
                 time.sleep(PROVIDER_SWITCH_DELAY)
@@ -388,6 +393,20 @@ def _generate_and_pick_best(
 # ─── DeepSeek via Ollama ──────────────────────────────────────────────────────
 
 def _call_ollama(system_prompt: str, user_message: str, profile: str) -> dict:
+    """
+    Provider A — OpenAI-compatible generator.
+    Dikonfigurasi via PROVIDER_A_* di .env (alias: OLLAMA_*).
+    """
+    cfg = get_provider_config("a")
+    base_url = cfg["base_url"]
+    api_key  = cfg["api_key"]
+    candidates = cfg["candidates"]
+
+    if not base_url:
+        raise RuntimeError("PROVIDER_A_BASE_URL tidak dikonfigurasi di .env")
+    if not api_key:
+        raise RuntimeError("PROVIDER_A_API_KEY tidak dikonfigurasi di .env")
+
     max_tokens = SCRIPT_MAX_TOKENS_LONGFORM if profile == "long_form" else SCRIPT_MAX_TOKENS_SHORTS
     system_with_json = (
         system_prompt +
@@ -396,68 +415,188 @@ def _call_ollama(system_prompt: str, user_message: str, profile: str) -> dict:
         "Start your response directly with { and end with }."
     )
 
-    for attempt in range(1, MAX_JSON_RETRY + 1):
-        user_msg = user_message + _get_length_hint(profile)
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type":  "application/json",
+    }
 
-        # Makin banyak gagal, makin tegas instruksinya
-        if attempt > 1:
-            user_msg += (
-                f"\n\n[ATTEMPT {attempt}] IMPORTANT: Output ONLY the JSON object. "
-                "Do NOT use markdown code blocks. Start directly with { ."
+    session = requests.Session()
+    session.trust_env = False
+
+    last_error = None
+    for model_name in candidates:
+        for attempt in range(1, MAX_JSON_RETRY + 1):
+            user_msg = user_message + _get_length_hint(profile)
+            if attempt > 1:
+                user_msg += (
+                    f"\n\n[ATTEMPT {attempt}] IMPORTANT: Output ONLY the JSON object. "
+                    "Do NOT use markdown code blocks. Start directly with { ."
+                )
+
+            logger.info(f"Menggunakan Provider-A model: {model_name}")
+            payload = {
+                "model": model_name,
+                "messages": [
+                    {"role": "system", "content": system_with_json},
+                    {"role": "user",   "content": user_msg},
+                ],
+                "temperature": max(0.7, 1.10 - (attempt - 1) * 0.10),
+                "top_p":       0.98,
+                "stream":      False,
+            }
+
+            try:
+                resp = session.post(
+                    f"{base_url.rstrip('/')}/chat/completions",
+                    headers=headers,
+                    json=payload,
+                    timeout=600,
+                )
+                resp.raise_for_status()
+            except requests.exceptions.HTTPError as exc:
+                last_error = exc
+                status = exc.response.status_code if exc.response is not None else None
+                logger.warning(f"Provider-A model={model_name} HTTP {status}: {exc}")
+                if status in (400, 404):
+                    break  # coba model berikutnya
+                if attempt == MAX_JSON_RETRY:
+                    break
+                continue
+            except requests.exceptions.Timeout:
+                raise RuntimeError(f"Provider-A timeout ({model_name}) — tidak merespons dalam 600s")
+            except Exception as exc:
+                last_error = exc
+                logger.warning(f"Provider-A model={model_name}: {exc}")
+                if attempt == MAX_JSON_RETRY:
+                    break
+                continue
+
+            raw = (
+                resp.json()
+                .get("choices", [{}])[0]
+                .get("message", {})
+                .get("content", "")
+                .strip()
             )
+            if not raw:
+                logger.warning(f"Provider-A model={model_name} attempt {attempt}: response kosong, retry...")
+                continue
 
-        selected_model = get_ollama_model()
-        logger.info(f"Menggunakan Ollama model: {selected_model}")
-        
-        payload = {
-            "model": selected_model,
-            "messages": [
-                {"role": "system", "content": system_with_json},
-                {"role": "user",   "content": user_msg},
-            ],
-            "stream":  False,
-            "format":  "json",
-            "options": {
-                # Generator: high creativity, anti-repetition
-                "temperature":    max(0.7, 1.10 - (attempt - 1) * 0.10),  # 1.10 -> 1.00 -> 0.90
-                "top_p":          0.98,
-                "top_k":          80,
-                "repeat_penalty": 1.15,
-                "num_ctx":        16384,
-                "seed":           -1,   # -1 = random, variasi antar video
-            },
-        }
+            try:
+                parsed_result = _parse_json_response(raw, profile)
+                parsed_result["generator_model"] = model_name
+                return parsed_result
+            except (json.JSONDecodeError, ValueError) as e:
+                last_error = e
+                logger.warning(f"Provider-A model={model_name} attempt {attempt}/{MAX_JSON_RETRY}: JSON parse gagal — {e}")
+                if attempt == MAX_JSON_RETRY:
+                    break
 
-        try:
-            resp = requests.post(
-                f"{OLLAMA_BASE_URL}/api/chat",
-                json=payload,
-                timeout=600,  # 10 Menit timeout untuk naskah panjang
+    raise RuntimeError(f"Provider-A: semua model/attempt gagal. Error terakhir: {last_error}")
+
+
+# ─── Provider-B (DeepSeek) ────────────────────────────────────────────────────
+
+def _call_provider_b(system_prompt: str, user_message: str, profile: str) -> dict:
+    """
+    Provider B — OpenAI-compatible generator (default: DeepSeek).
+    Dikonfigurasi via PROVIDER_B_* di .env.
+    """
+    cfg = get_provider_config("b")
+    base_url   = cfg["base_url"]
+    api_key    = cfg["api_key"]
+    candidates = cfg["candidates"]
+
+    if not base_url:
+        raise RuntimeError("PROVIDER_B_BASE_URL tidak dikonfigurasi di .env")
+    if not api_key:
+        raise RuntimeError("PROVIDER_B_API_KEY tidak dikonfigurasi di .env")
+
+    system_with_json = (
+        system_prompt +
+        "\n\nCRITICAL: Respond with ONLY a raw JSON object. "
+        "No markdown, no ```json fences, no backticks, no explanation. "
+        "Start your response directly with { and end with }."
+    )
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type":  "application/json",
+    }
+
+    session = requests.Session()
+    session.trust_env = False
+
+    last_error = None
+    for model_name in candidates:
+        for attempt in range(1, MAX_JSON_RETRY + 1):
+            user_msg = user_message + _get_length_hint(profile)
+            if attempt > 1:
+                user_msg += (
+                    f"\n\n[ATTEMPT {attempt}] IMPORTANT: Output ONLY the JSON object. "
+                    "Do NOT use markdown code blocks. Start directly with { ."
+                )
+
+            logger.info(f"Menggunakan Provider-B model: {model_name}")
+            payload = {
+                "model": model_name,
+                "messages": [
+                    {"role": "system", "content": system_with_json},
+                    {"role": "user",   "content": user_msg},
+                ],
+                "temperature": max(0.7, 1.10 - (attempt - 1) * 0.10),
+                "top_p":       0.98,
+                "stream":      False,
+            }
+
+            try:
+                resp = session.post(
+                    f"{base_url.rstrip('/')}/chat/completions",
+                    headers=headers,
+                    json=payload,
+                    timeout=600,
+                )
+                resp.raise_for_status()
+            except requests.exceptions.HTTPError as exc:
+                last_error = exc
+                status = exc.response.status_code if exc.response is not None else None
+                logger.warning(f"Provider-B model={model_name} HTTP {status}: {exc}")
+                if status in (400, 404):
+                    break
+                if attempt == MAX_JSON_RETRY:
+                    break
+                continue
+            except requests.exceptions.Timeout:
+                raise RuntimeError(f"Provider-B timeout ({model_name}) — tidak merespons dalam 600s")
+            except Exception as exc:
+                last_error = exc
+                logger.warning(f"Provider-B model={model_name}: {exc}")
+                if attempt == MAX_JSON_RETRY:
+                    break
+                continue
+
+            raw = (
+                resp.json()
+                .get("choices", [{}])[0]
+                .get("message", {})
+                .get("content", "")
+                .strip()
             )
-            resp.raise_for_status()
-        except requests.exceptions.ConnectionError:
-            raise RuntimeError(
-                f"Ollama tidak bisa dihubungi di {OLLAMA_BASE_URL}. "
-                "Pastikan Ollama sudah jalan."
-            )
-        except requests.exceptions.Timeout:
-            raise RuntimeError("Ollama timeout — model tidak merespons dalam 600 detik")
+            if not raw:
+                logger.warning(f"Provider-B model={model_name} attempt {attempt}: response kosong, retry...")
+                continue
 
-        raw = resp.json().get("message", {}).get("content", "").strip()
-        if not raw:
-            logger.warning(f"Ollama attempt {attempt}: response kosong, retry...")
-            continue
+            try:
+                parsed_result = _parse_json_response(raw, profile)
+                parsed_result["generator_model"] = model_name
+                return parsed_result
+            except (json.JSONDecodeError, ValueError) as e:
+                last_error = e
+                logger.warning(f"Provider-B model={model_name} attempt {attempt}/{MAX_JSON_RETRY}: JSON parse gagal — {e}")
+                if attempt == MAX_JSON_RETRY:
+                    break
 
-        try:
-            parsed_result = _parse_json_response(raw, profile)
-            parsed_result["generator_model"] = selected_model
-            return parsed_result
-        except (json.JSONDecodeError, ValueError) as e:
-            logger.warning(f"Ollama attempt {attempt}/{MAX_JSON_RETRY}: JSON parse gagal — {e}")
-            if attempt == MAX_JSON_RETRY:
-                raise RuntimeError(f"Ollama gagal produce valid JSON setelah {MAX_JSON_RETRY}x: {e}")
-
-    raise RuntimeError("Ollama: semua retry habis")
+    raise RuntimeError(f"Provider-B: semua model/attempt gagal. Error terakhir: {last_error}")
 
 
 # ─── Groq ─────────────────────────────────────────────────────────────────────
@@ -809,16 +948,17 @@ def _repair_schema_with_ai(data: dict, profile: str, error_message: str) -> dict
 
     repair_attempts: list[tuple[str, Callable[[], dict]]] = []
 
-    if os.environ.get("QWEN_API_KEY"):
-        def _repair_with_qwen() -> dict:
-            api_key = require_env("QWEN_API_KEY")
+    # Slot A (Generator)
+    cfg_a = get_provider_config("a")
+    if cfg_a["api_key"] and cfg_a["base_url"]:
+        def _repair_with_a() -> dict:
             last_error = None
-            for model_name in _qwen_models_to_try():
+            for model_name in cfg_a["candidates"]:
                 try:
                     resp = _post_json_no_proxy(
-                        f"{QWEN_API_BASE.rstrip('/')}/chat/completions",
+                        f"{cfg_a['base_url'].rstrip('/')}/chat/completions",
                         headers={
-                            "Authorization": f"Bearer {api_key}",
+                            "Authorization": f"Bearer {cfg_a['api_key']}",
                             "Content-Type": "application/json",
                         },
                         payload={
@@ -847,47 +987,60 @@ def _repair_schema_with_ai(data: dict, profile: str, error_message: str) -> dict
                         .strip()
                     )
                     if not raw:
-                        raise ValueError("Qwen schema repair returned empty response")
+                        raise ValueError("Provider A schema repair returned empty response")
                     return _parse_json_loose(raw, profile)
                 except Exception as exc:
                     last_error = exc
-            raise RuntimeError(f"Qwen schema repair gagal: {last_error}")
+            raise RuntimeError(f"Provider A schema repair gagal: {last_error}")
 
-        repair_attempts.append(("qwen", _repair_with_qwen))
+        repair_attempts.append(("provider_a", _repair_with_a))
 
-    def _repair_with_ollama() -> dict:
-        selected_model = get_ollama_model()
-        resp = requests.post(
-            f"{OLLAMA_BASE_URL}/api/chat",
-            json={
-                "model": selected_model,
-                "messages": [
-                    {
-                        "role": "system",
-                        "content": (
-                            "Repair the JSON schema. Return only a raw JSON object. "
-                            "No markdown, no commentary."
-                        ),
-                    },
-                    {"role": "user", "content": prompt},
-                ],
-                "stream": False,
-                "format": "json",
-                "options": {
-                    "temperature": 0.1,
-                    "top_p": 0.9,
-                    "num_ctx": 16384,
-                },
-            },
-            timeout=240,
-        )
-        resp.raise_for_status()
-        raw = resp.json().get("message", {}).get("content", "").strip()
-        if not raw:
-            raise ValueError("Ollama schema repair returned empty response")
-        return _parse_json_loose(raw, profile)
+    # Slot B (Scorer / Evaluator)
+    cfg_b = get_provider_config("b")
+    if cfg_b["api_key"] and cfg_b["base_url"]:
+        def _repair_with_b() -> dict:
+            last_error = None
+            for model_name in cfg_b["candidates"]:
+                try:
+                    resp = _post_json_no_proxy(
+                        f"{cfg_b['base_url'].rstrip('/')}/chat/completions",
+                        headers={
+                            "Authorization": f"Bearer {cfg_b['api_key']}",
+                            "Content-Type": "application/json",
+                        },
+                        payload={
+                            "model": model_name,
+                            "messages": [
+                                {
+                                    "role": "system",
+                                    "content": (
+                                        "Repair the JSON schema. Return only a raw JSON object. "
+                                        "No markdown, no commentary."
+                                    ),
+                                },
+                                {"role": "user", "content": prompt},
+                            ],
+                            "temperature": 0.1,
+                            "top_p": 0.9,
+                        },
+                        timeout=180,
+                    )
+                    resp.raise_for_status()
+                    raw = (
+                        resp.json()
+                        .get("choices", [{}])[0]
+                        .get("message", {})
+                        .get("content", "")
+                        .strip()
+                    )
+                    if not raw:
+                        raise ValueError("Provider B schema repair returned empty response")
+                    return _parse_json_loose(raw, profile)
+                except Exception as exc:
+                    last_error = exc
+            raise RuntimeError(f"Provider B schema repair gagal: {last_error}")
 
-    repair_attempts.append(("ollama", _repair_with_ollama))
+        repair_attempts.append(("provider_b", _repair_with_b))
 
     for provider_name, provider_fn in repair_attempts:
         try:
@@ -1680,10 +1833,15 @@ def review_and_iterate(script_data: dict, channel: dict, profile: str = "shorts"
 
 def _review_script_payload(script_data: dict, channel: dict, threshold: float, mode: str) -> dict:
     prompt = _build_review_prompt(script_data, channel, threshold, mode)
-    # Primary: Ollama + Qwen (anti-sycophancy). Groq sebagai last-resort.
-    primary_reviewers = ["DeepSeek/Ollama"]
-    if os.getenv("QWEN_API_KEY"):
-        primary_reviewers.append("Qwen")
+    
+    primary_reviewers = []
+    cfg_a = get_provider_config("a")
+    if cfg_a["api_key"] and cfg_a["base_url"]:
+        primary_reviewers.append("provider_a")
+    cfg_b = get_provider_config("b")
+    if cfg_b["api_key"] and cfg_b["base_url"]:
+        primary_reviewers.append("provider_b")
+
     random.shuffle(primary_reviewers)
     providers = primary_reviewers + ["Groq"]
 
@@ -1704,34 +1862,30 @@ def _review_script_payload(script_data: dict, channel: dict, threshold: float, m
 
 
 def _call_review_provider(provider: str, prompt: str) -> str:
-    if provider == "DeepSeek/Ollama":
-        selected_model = get_ollama_model()
-        logger.info(f"Menggunakan Ollama model (Reviewer): {selected_model}")
-        resp = requests.post(
-            f"{OLLAMA_BASE_URL}/api/chat",
-            json={
-                "model": selected_model,
-                "messages": [
-                    {"role": "system", "content": "You are a ruthless short-form editor. Output JSON only."},
-                    {"role": "user", "content": prompt},
-                ],
-                "stream": False,
-                "format": "json",
-                "options": {"temperature": 0.35, "num_predict": SCRIPT_REVIEW_MAX_TOKENS, "num_ctx": 8192},
-            },
-            timeout=300,
-        )
-        resp.raise_for_status()
-        return resp.json().get("message", {}).get("content", "").strip()
+    if provider in ("DeepSeek/Ollama", "Qwen", "provider_a", "provider_b"):
+        slot = None
+        if provider in ("DeepSeek/Ollama", "provider_b"):
+            slot = "b"
+        elif provider in ("Qwen", "provider_a"):
+            slot = "a"
 
-    if provider == "Qwen":
+        cfg = get_provider_config(slot)
+        base_url = cfg["base_url"]
+        api_key  = cfg["api_key"]
+        if not base_url or not api_key:
+            raise RuntimeError(f"Provider slot {slot.upper()} base_url atau api_key tidak dikonfigurasi di .env")
+
         last_error = None
-        for model_name in _qwen_models_to_try():
+        preferred_model = get_provider_model(slot)
+        models_to_try = [preferred_model] + [m for m in cfg["candidates"] if m != preferred_model]
+
+        for model_name in models_to_try:
             try:
+                logger.info(f"Menggunakan Provider-{slot.upper()} model (Reviewer): {model_name}")
                 resp = _post_json_no_proxy(
-                    f"{QWEN_API_BASE.rstrip('/')}/chat/completions",
+                    f"{base_url.rstrip('/')}/chat/completions",
                     headers={
-                        "Authorization": f"Bearer {require_env('QWEN_API_KEY')}",
+                        "Authorization": f"Bearer {api_key}",
                         "Content-Type": "application/json",
                     },
                     payload={
@@ -1741,7 +1895,6 @@ def _call_review_provider(provider: str, prompt: str) -> str:
                             {"role": "user", "content": prompt},
                         ],
                         "temperature": 0.35,
-                        "max_tokens": SCRIPT_REVIEW_MAX_TOKENS,
                     },
                     timeout=300,
                 )
@@ -1755,8 +1908,8 @@ def _call_review_provider(provider: str, prompt: str) -> str:
                 )
             except Exception as exc:
                 last_error = exc
-                logger.warning(f"Review Qwen model={model_name} gagal: {exc}")
-        raise RuntimeError(f"Review Qwen gagal di semua model: {last_error}")
+                logger.warning(f"Review Provider-{slot.upper()} model={model_name} gagal: {exc}")
+        raise RuntimeError(f"Review Provider-{slot.upper()} gagal di semua model. Error terakhir: {last_error}")
 
     if provider == "Groq":
         from groq import Groq

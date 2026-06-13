@@ -598,7 +598,7 @@ def _call_music_ai_provider(provider: str, prompt: str) -> str:
         raise RuntimeError(f"Music Qwen gagal semua model: {last_err}")
 
     resp = requests.post(
-        f"{OLLAMA_BASE_URL}/api/chat",
+        f"{OLLAMA_BASE_URL}/chat/completions", headers={"Authorization": f'Bearer {os.environ.get("OLLAMA_API_KEY")}'} if os.environ.get("OLLAMA_API_KEY") else {},
         json={
             "model": get_ollama_model(),
             "messages": [

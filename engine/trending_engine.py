@@ -225,16 +225,17 @@ def get_trending_topics(niche: str, language: str, channel_id: str = None, limit
     except Exception as e:
         logger.warning(f"[trending] YouTube suggestions gagal: {e}")
 
-    # 4. Ollama AI Brainstorming (Sebagai pelengkap atau jika semua sumber gagal)
+    # 4. AI Brainstorming via Provider A (Sebagai pelengkap atau jika semua sumber gagal)
     if len(topics) < limit:
         try:
-            logger.info(f"[trending] Mencoba brainstorming via Ollama ({get_ollama_model()})...")
-            ai_topics = _generate_via_ollama(niche, language, existing_topics=topics)
+            from engine.utils import get_provider_model
+            logger.info(f"[trending] Mencoba brainstorming via Provider A ({get_provider_model('a')})...")
+            ai_topics = _generate_via_provider(niche, language, existing_topics=topics)
             if ai_topics:
                 topics.extend(ai_topics)
-                logger.info(f"[trending] Ollama berhasil -> {len(ai_topics)} topik tambahan")
+                logger.info(f"[trending] Provider A berhasil -> {len(ai_topics)} topik tambahan")
         except Exception as e:
-            logger.warning(f"[trending] Ollama gagal: {e}")
+            logger.warning(f"[trending] Provider A gagal: {e}")
 
     if not topics:
         logger.warning(f"[trending] Semua sumber gagal, mengembalikan list kosong")
@@ -246,10 +247,18 @@ def get_trending_topics(niche: str, language: str, channel_id: str = None, limit
     return topics[:limit]
 
 
-def _generate_via_ollama(niche: str, language: str, existing_topics: list) -> list[str]:
+def _generate_via_provider(niche: str, language: str, existing_topics: list) -> list[str]:
     """
-    Gunakan AI lokal untuk memikirkan topik yang berpotensi viral berdasarkan niche.
+    Gunakan AI Provider A untuk memikirkan topik yang berpotensi viral berdasarkan niche.
     """
+    from engine.utils import get_provider_config, get_provider_model
+    cfg = get_provider_config("a")
+    base_url = cfg["base_url"]
+    api_key  = cfg["api_key"]
+    if not base_url or not api_key:
+        logger.warning("[trending] Provider A tidak dikonfigurasi -> skip AI brainstorming")
+        return []
+
     niche_desc = "horror mysteries and dark facts" if niche == "horror_facts" else "psychology and human behavior"
     lang_name = "Indonesian" if language == "id" else "English"
     
@@ -264,17 +273,29 @@ def _generate_via_ollama(niche: str, language: str, existing_topics: list) -> li
     if existing_topics:
         prompt += f"\nAvoid these topics: {', '.join(existing_topics[:10])}"
 
+    model_name = get_provider_model("a")
     payload = {
-        "model": get_ollama_model(),
-        "prompt": prompt,
+        "model": model_name,
+        "messages": [
+            {"role": "user", "content": prompt}
+        ],
+        "temperature": 1.0,
+        "top_p": 0.98,
         "stream": False,
-        "options": {"temperature": 1.0, "top_p": 0.98, "top_k": 80}
     }
 
     try:
-        resp = requests.post(f"{OLLAMA_BASE_URL}/api/generate", json=payload, timeout=60)
+        resp = requests.post(
+            f"{base_url.rstrip('/')}/chat/completions",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+            timeout=60,
+        )
         resp.raise_for_status()
-        raw_response = resp.json().get("response", "").strip()
+        raw_response = resp.json().get("choices", [{}])[0].get("message", {}).get("content", "").strip()
         
         # Bersihkan baris dan ambil yang valid
         lines = [line.strip() for line in raw_response.split('\n') if len(line.strip()) > 10]
@@ -289,7 +310,7 @@ def _generate_via_ollama(niche: str, language: str, existing_topics: list) -> li
                 
         return valid_topics
     except Exception as e:
-        logger.error(f"[trending] Ollama API Error: {e}")
+        logger.error(f"[trending] Provider A API Error: {e}")
         return []
 
 
