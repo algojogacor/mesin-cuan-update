@@ -272,7 +272,7 @@ def api_key_wizard():
 _CLEAN_SUBDIRS = ("audio", "footage", "temp")
 PIPELINE_STAGE_WORKERS = {
     "script": 1,
-    "prep": 1,
+    "prep": 2,
     "render": 2,
     "post": 1,
 }
@@ -1150,7 +1150,7 @@ def run_campaign(target_channel_id=None, dry_run=False, skip_qc=False):
         logger.info("✅ Tidak ada job valid yang bisa dijalankan.")
         return
 
-    summary = "Lane: script=1 | prep=1 | render=1 | post=1"
+    summary = "Lane: script=1 | prep=2 | render=2 | post=1"
     if skip_qc:
         summary += " | QC Vision: OFF"
     log_box(logger, f"SMART PIPELINE BATCH  {len(jobs)} video", summary)

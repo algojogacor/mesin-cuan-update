@@ -26,6 +26,7 @@ import subprocess
 import shutil
 import random
 import math
+from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, Future, as_completed
 from engine.utils import get_logger, load_settings, timestamp, channel_data_path
 
@@ -83,9 +84,9 @@ KEN_BURNS_ZOOM_DIRS   = [       # (x_expr, y_expr, zoom_start, zoom_end)
 ]
 
 # ── Blurred Background ────────────────────────────────────────────────────────
-BG_BLUR_RADIUS       = 25       # Radius boxblur — 25 cukup cinematic, tidak terlalu berat
-BG_BLUR_POWER        = 8        # Iterasi blur — jangan ubah tanpa tes
-FG_ZOOM_SCALE_FACTOR = 2        # Scale foreground 2x sebelum zoompan (jaga kualitas)
+BG_BLUR_RADIUS       = 20       # Blur tetap terlihat pada background Shorts tanpa kerja berlebih
+BG_BLUR_POWER        = 2        # Dua pass sudah cukup untuk background yang tidak jadi fokus
+FG_ZOOM_SCALE_FACTOR = 1.5      # Headroom zoom tetap aman, lebih ringan dari render internal 4K
 
 # ── Subtitle ──────────────────────────────────────────────────────────────────
 SUB_FONT_NAME            = "Arial"  # Font — pastikan ada di sistem (fallback aman)
@@ -238,17 +239,17 @@ NICHE_TITLE_SHADOW_COLOR: dict = {
 # PI/3.5 ≈ 35% opacity (horror) | PI/5 ≈ 20% | PI/6 ≈ 15%
 # Sebelumnya semua hardcoded PI/4 — sekarang per niche
 NICHE_VIGNETTE_FILTER: dict = {
-    "horror_facts": "vignette=PI/5:eval=frame",  # Gelap di pinggir — horror
-    "drama":        "vignette=PI/5:eval=frame",  # Sama dengan horror
-    "crime":        "vignette=PI/5:eval=frame",  # Sedikit lebih terang
-    "history":      "vignette=PI/5:eval=frame",    # Standard
-    "psychology":   "vignette=PI/6:eval=frame",    # Minimal — clean & profesional
-    "motivation":   "vignette=PI/6:eval=frame",    # Minimal — energetik
-    "science":      "vignette=PI/6:eval=frame",    # Minimal
-    "finance":      "vignette=PI/6:eval=frame",    # Minimal
-    "lifestyle":    "vignette=PI/7:eval=frame",    # Hampir tidak terlihat
-    "nature":       "vignette=PI/7:eval=frame",    # Hampir tidak terlihat
-    "default":      "vignette=PI/5:eval=frame",    # Fallback
+    "horror_facts": "vignette=PI/5",  # Static effect: tidak perlu dievaluasi ulang tiap frame
+    "drama":        "vignette=PI/5",
+    "crime":        "vignette=PI/5",
+    "history":      "vignette=PI/5",
+    "psychology":   "vignette=PI/6",
+    "motivation":   "vignette=PI/6",
+    "science":      "vignette=PI/6",
+    "finance":      "vignette=PI/6",
+    "lifestyle":    "vignette=PI/7",
+    "nature":       "vignette=PI/7",
+    "default":      "vignette=PI/5",
 }
 
 
@@ -571,28 +572,26 @@ def _render_shorts(script_data: dict, audio_path: str, footage_paths: list,
     # Step 8: Generate & burn subtitle ASS karaoke
     subtitle_path  = _generate_ass_subtitle(sentences, ch_id, width, height, niche)
     base, ext      = os.path.splitext(out_path)
-    subtitled_path = f"{base}_sub{ext}"
-    _burn_subtitles(video_with_audio_path, subtitle_path, subtitled_path)
+    # Subtitle dibakar bersama finishing untuk menghindari satu re-encode penuh.
 
-    # Step 9: Tambah intro splash screen channel
-    splashed_path = subtitled_path
-    logger.info("Shorts skip intro splash to preserve the cold open")
+    # Shorts skip intro splash to preserve the cold open.
 
     # Step 10: Finishing — progress bar + title overlay + letterbox
     finished_path = f"{base}_finish{ext}"
     _add_finishing_effects(
-        splashed_path, finished_path,
+        video_with_audio_path, finished_path,
         title=script_data.get("title", ""),
         width=width, height=height,
         duration=audio_dur, niche=niche,
-        profile="shorts", script_data=script_data
+        profile="shorts", script_data=script_data,
+        subtitle_path=subtitle_path,
     )
 
     # Step 11: Loudnorm final — standarisasi volume ke -14 LUFS (YouTube standard)
     _apply_loudnorm(finished_path, out_path)
 
     # Cleanup intermediate files
-    for temp_path in [subtitled_path, splashed_path, finished_path]:
+    for temp_path in [finished_path]:
         if os.path.exists(temp_path):
             os.remove(temp_path)
 
@@ -837,6 +836,8 @@ def _build_synced_footage(footage_paths: list, sentences: list, audio_dur: float
         zoom_start = float(kb[2])
         zoom_end   = float(kb[3])
         n_frames   = max(int(seg_duration * fps), 1)
+        zoom_width = int(width * FG_ZOOM_SCALE_FACTOR)
+        zoom_height = int(height * FG_ZOOM_SCALE_FACTOR)
 
         # Zoom expression: interpolasi linear dari zoom_start ke zoom_end
         zoom_delta  = zoom_end - zoom_start
@@ -853,9 +854,9 @@ def _build_synced_footage(footage_paths: list, sentences: list, audio_dur: float
             f"scale={width}:{height}:force_original_aspect_ratio=increase,"
             f"crop={width}:{height},"
             f"boxblur={BG_BLUR_RADIUS}:{BG_BLUR_POWER},setsar=1[blurred_bg];"
-            # Foreground: scale 2x dulu untuk zoompan berkualitas, lalu zoompan
+            # Foreground: upscale secukupnya untuk headroom zoom tanpa render internal 4K
             f"[raw_fg]fps={fps},"
-            f"scale={width*FG_ZOOM_SCALE_FACTOR}:{height*FG_ZOOM_SCALE_FACTOR}"
+            f"scale={zoom_width}:{zoom_height}"
             f":force_original_aspect_ratio=decrease,"
             f"zoompan=z={zoom_expr}:x='{x_expr}':y='{y_expr}'"
             f":d={n_frames}:s={width}x{height}:fps={fps},"
@@ -909,6 +910,15 @@ def _build_synced_footage(footage_paths: list, sentences: list, audio_dur: float
     return synced_out
 
 
+def _write_concat_list(clip_paths: list, list_file: str) -> None:
+    """Write FFconcat input with absolute paths so the demuxer resolves each clip correctly."""
+    with open(list_file, "w", encoding="utf-8") as f:
+        f.write("ffconcat version 1.0\n")
+        for clip_path in clip_paths:
+            normalized_path = Path(clip_path).resolve().as_posix()
+            f.write(f"file '{normalized_path}'\n")
+
+
 def _concat_clips(clip_paths: list, out_path: str, tmp_dir: str):
     """
     Concat multiple clip files jadi satu.
@@ -916,9 +926,7 @@ def _concat_clips(clip_paths: list, out_path: str, tmp_dir: str):
     Fallback ke re-encode jika format tidak kompatibel.
     """
     list_file = f"{tmp_dir}/concat_list.txt"
-    with open(list_file, "w", encoding="utf-8") as f:
-        for p in clip_paths:
-            f.write(f"file '{p.replace(chr(92), '/')}'\n")
+    _write_concat_list(clip_paths, list_file)
 
     result = subprocess.run(
         ["ffmpeg", "-y", "-f", "concat", "-safe", "0",
@@ -929,7 +937,10 @@ def _concat_clips(clip_paths: list, out_path: str, tmp_dir: str):
         return
 
     # Fallback: re-encode concat (lebih lambat tapi pasti jalan)
-    logger.warning("Stream copy concat gagal, re-encode concat...")
+    logger.warning(
+        "Stream copy concat gagal, re-encode concat... FFmpeg: %s",
+        result.stderr.strip()[-700:],
+    )
     inputs = []
     for p in clip_paths:
         inputs += ["-i", p]
@@ -1202,7 +1213,8 @@ def _add_intro_splash(input_path: str, out_path: str,
 def _add_finishing_effects(input_path: str, out_path: str, title: str,
                            width: int, height: int,
                            duration: float, niche: str = "default",
-                           profile: str = "shorts", script_data: dict | None = None):
+                           profile: str = "shorts", script_data: dict | None = None,
+                           subtitle_path: str | None = None):
     """
     Tambah elemen visual finishing:
     1. Cinematic letterbox (horror/drama/history) — black bars atas+bawah
@@ -1220,37 +1232,30 @@ def _add_finishing_effects(input_path: str, out_path: str, title: str,
     title_shadow_col = NICHE_TITLE_SHADOW_COLOR.get(niche, NICHE_TITLE_SHADOW_COLOR["default"])
 
     # ── Step 1: Cinematic letterbox ───────────────────────────────────────────
-    working_path = input_path
-    letterbox_tmp = input_path + "_lb.mp4"
+    # Subtitle dan letterbox digabung ke finishing agar hanya satu encode pass.
+    filter_chain = ""
+    source_label = "0:v"
+    if subtitle_path:
+        subtitle_path_escaped = subtitle_path.replace("\\", "/").replace(":", "\\:")
+        filter_chain += f"[{source_label}]ass='{subtitle_path_escaped}'[subtitled];"
+        source_label = "subtitled"
 
     if niche in LETTERBOX_NICHES:
         bar_height_px = int(height * LETTERBOX_HEIGHT_PCT)
-        lb_filter = (
-            f"[0:v]pad={width}:{height}:0:0:black,"
-            f"drawbox=x=0:y=0:w={width}:h={bar_height_px}"
+        filter_chain += (
+            f"[{source_label}]drawbox=x=0:y=0:w={width}:h={bar_height_px}"
             f":color=black@{LETTERBOX_OPACITY}:t=fill,"
             f"drawbox=x=0:y={height-bar_height_px}:w={width}:h={bar_height_px}"
-            f":color=black@{LETTERBOX_OPACITY}:t=fill[lbout]"
+            f":color=black@{LETTERBOX_OPACITY}:t=fill[letterboxed];"
         )
-        try:
-            _run_ffmpeg_with_gpu_fallback(
-                ["ffmpeg", "-y", "-i", input_path,
-                 "-filter_complex", lb_filter,
-                 "-map", "[lbout]", "-map", "0:a",
-                 "-threads", str(FFMPEG_THREAD_COUNT)]
-                + _encode_params() + ["-c:a", "copy", letterbox_tmp],
-                "letterbox"
-            )
-            working_path = letterbox_tmp
-            logger.info(f"Letterbox OK ({bar_height_px}px) niche={niche}")
-        except Exception as e:
-            logger.warning(f"Letterbox gagal ({e}), skip")
+        source_label = "letterboxed"
+        logger.info(f"Letterbox merged ({bar_height_px}px) niche={niche}")
 
     # ── Step 2: Progress bar ──────────────────────────────────────────────────
-    filter_chain = (
+    filter_chain += (
         f"color=c={progress_color}@{PROGRESS_BAR_OPACITY}"
         f":s={width}x{progress_bar_h}:d={duration:.3f} [bar]; "
-        f"[0:v][bar]overlay=x='-W+(t/{duration:.3f})*W':y=H-h [with_bar]"
+        f"[{source_label}][bar]overlay=x='-W+(t/{duration:.3f})*W':y=H-h [with_bar]"
     )
 
     # ── Step 3: Title overlay ─────────────────────────────────────────────────
@@ -1399,7 +1404,7 @@ def _add_finishing_effects(input_path: str, out_path: str, title: str,
 
     try:
         _run_ffmpeg_with_gpu_fallback(
-            ["ffmpeg", "-y", "-i", working_path,
+            ["ffmpeg", "-y", "-i", input_path,
              "-filter_complex", filter_chain,
              "-map", "[outv]", "-map", "0:a",
              "-threads", str(FFMPEG_THREAD_COUNT)]
@@ -1408,10 +1413,7 @@ def _add_finishing_effects(input_path: str, out_path: str, title: str,
         )
     except Exception as e:
         logger.warning(f"Finishing effects gagal ({e}), skip")
-        shutil.copy2(working_path, out_path)
-    finally:
-        if working_path != input_path and os.path.exists(working_path):
-            os.remove(working_path)
+        shutil.copy2(input_path, out_path)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
