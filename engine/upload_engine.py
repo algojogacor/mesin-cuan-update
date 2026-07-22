@@ -108,8 +108,7 @@ def _get_youtube_client(cred_file: str):
     token_file = cred_file.replace("_token.json", "_v2.json")
 
     if os.path.exists(token_file):
-        with open(token_file, "r", encoding="utf-8") as f:
-            creds = Credentials.from_json(f.read())
+        creds = Credentials.from_authorized_user_file(token_file)
 
     if creds and creds.expired and creds.refresh_token:
         try:

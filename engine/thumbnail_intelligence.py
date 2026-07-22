@@ -34,15 +34,6 @@ logger = get_logger("thumbnail_intelligence")
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
-QWEN_API_BASE   = os.environ.get("QWEN_API_BASE", "http://localhost:9000/v1")
-QWEN_MODEL      = os.environ.get("QWEN_MODEL",      "qwen3-235b-a22b")
-QWEN_MODEL_CANDIDATES = [
-    m.strip() for m in os.environ.get(
-        "QWEN_MODEL_CANDIDATES",
-        "qwen3-235b-a22b,qwen3-plus,qwen2.5-72b-instruct,qwen3-30b-a3b,qwen3-turbo"
-    ).split(",")
-    if m.strip()
-]
 
 # Berapa style_id terakhir yang tidak boleh diulang
 ANTI_REPEAT_WINDOW = 15
@@ -432,17 +423,19 @@ Generate 3 NEW thumbnail text style patterns for {niche} content in {lang_label}
 Existing patterns (DO NOT duplicate): {existing_str}
 
 Each style must be a unique formula — a constraint that guides text creation.
-Return ONLY valid JSON array, no markdown:
-[
-  {{
-    "style_id": "{niche[:5]}_{language}_{timestamp_suffix}_a",
-    "text_pattern": "PATTERN_NAME_CAPSLOCK",
-    "description": "One sentence describing what makes this pattern work",
-    "examples": ["EXAMPLE1", "EXAMPLE2", "EXAMPLE3"],
-    "color_variant": 1,
-    "hook_angle": "forbidden_record"
-  }}
-]
+Return ONLY this valid JSON object, no markdown:
+{{
+  "styles": [
+    {{
+      "style_id": "{niche[:5]}_{language}_{timestamp_suffix}_a",
+      "text_pattern": "PATTERN_NAME_CAPSLOCK",
+      "description": "One sentence describing what makes this pattern work",
+      "examples": ["EXAMPLE1", "EXAMPLE2", "EXAMPLE3"],
+      "color_variant": 1,
+      "hook_angle": "forbidden_record"
+    }}
+  ]
+}}
 
 hook_angle options: forbidden_record, conspiracy_reveal, body_horror, historical_shock, stat_attack
 color_variant options: 1 (red/yellow), 2 (cyan/navy), 3 (red/black)
@@ -461,23 +454,12 @@ Rules:
 
     for slot in providers:
         try:
-            raw = _call_provider(slot, prompt)
+            raw = _call_provider(slot, prompt, json_mode=True, max_tokens=768)
 
             if not raw:
                 continue
 
-            # Parse JSON array
-            cleaned = raw.strip()
-            cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.IGNORECASE)
-            cleaned = re.sub(r"\s*```$", "", cleaned).strip()
-
-            # Find array
-            if not cleaned.startswith("["):
-                match = re.search(r"\[.*\]", cleaned, re.DOTALL)
-                if match:
-                    cleaned = match.group()
-
-            styles = json.loads(cleaned)
+            styles = _parse_style_list(raw)
             if isinstance(styles, list) and styles:
                 logger.info(f"[{ch_id}] Generated {len(styles)} new styles via Provider-{slot.upper()}")
                 return styles[:3]
@@ -491,7 +473,56 @@ Rules:
 
 # ─── Provider Calls (lightweight, no Groq) ───────────────────────────────────
 
-def _call_provider(slot: str, prompt: str) -> str:
+def _uses_deepseek_v4(cfg: dict, model_name: str) -> bool:
+    return (
+        "api.deepseek.com" in str(cfg.get("base_url", "")).lower()
+        and str(model_name).lower().startswith("deepseek-v4-")
+    )
+
+
+def _build_provider_payload(
+    cfg: dict,
+    model_name: str,
+    prompt: str,
+    *,
+    json_mode: bool = False,
+    max_tokens: int = 200,
+) -> dict:
+    payload = {
+        "model": model_name,
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.95,
+        "top_p": 0.98,
+        "max_tokens": max_tokens,
+    }
+    if _uses_deepseek_v4(cfg, model_name):
+        payload["thinking"] = {"type": "disabled"}
+    if json_mode and _uses_deepseek_v4(cfg, model_name):
+        payload["response_format"] = {"type": "json_object"}
+    return payload
+
+
+def _parse_style_list(raw: str) -> list[dict]:
+    cleaned = (raw or "").strip()
+    if not cleaned:
+        raise ValueError("Provider mengembalikan content kosong")
+    cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s*```$", "", cleaned).strip()
+    parsed = json.loads(cleaned)
+    if isinstance(parsed, dict):
+        parsed = parsed.get("styles", [])
+    if not isinstance(parsed, list):
+        raise ValueError("Provider tidak mengembalikan daftar style")
+    return parsed
+
+
+def _call_provider(
+    slot: str,
+    prompt: str,
+    *,
+    json_mode: bool = False,
+    max_tokens: int = 200,
+) -> str:
     from engine.utils import get_provider_config, get_provider_model
     cfg = get_provider_config(slot)
     base_url = cfg["base_url"]
@@ -513,14 +544,13 @@ def _call_provider(slot: str, prompt: str) -> str:
                     "Authorization": f"Bearer {api_key}",
                     "Content-Type": "application/json",
                 },
-                json={
-                    "model": model_name,
-                    "messages": [{"role": "user", "content": prompt}],
-                    # Thumbnail generator: creative but controlled
-                    "temperature":       0.95,
-                    "top_p":             0.98,
-                    "max_tokens":        200,
-                },
+                json=_build_provider_payload(
+                    cfg,
+                    model_name,
+                    prompt,
+                    json_mode=json_mode,
+                    max_tokens=max_tokens,
+                ),
                 timeout=GEN_TIMEOUT,
             )
             resp.raise_for_status()

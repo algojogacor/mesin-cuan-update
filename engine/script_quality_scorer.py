@@ -7,7 +7,7 @@ Called with an explicit scorer_provider to enable cross-provider scoring
 
 Usage:
     from engine.script_quality_scorer import score_script
-    result = score_script(script_data, profile="shorts", scorer_provider="ollama")
+    result = score_script(script_data, profile="shorts", scorer_provider="provider_b")
     # → {"overall": 8.2, "hook_strength": 9.0, ..., "verdict": "PASS"}
 
 Scoring Dimensions (0-10 each):
@@ -19,8 +19,8 @@ Scoring Dimensions (0-10 each):
   anti_generic_score  – Does it feel fresh — not a generic AI template?
 
 Provider logic (Groq is NEVER primary scorer):
-  scorer_provider="qwen"   → Qwen API  → Ollama fallback → Groq last resort
-  scorer_provider="ollama" → Ollama    → Qwen fallback   → Groq last resort
+  scorer_provider="provider_a" → Provider-A → Provider-B fallback → Groq
+  scorer_provider="provider_b" → Provider-B → Provider-A fallback → Groq
 """
 
 from __future__ import annotations
@@ -28,6 +28,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from decimal import Decimal, ROUND_HALF_UP
 
 import requests
 
@@ -36,21 +37,23 @@ from engine.utils import get_logger, get_provider_config
 logger = get_logger("script_quality_scorer")
 
 # ── Constants ─────────────────────────────────────────────────────────────────
-# QWEN_* dibaca sebagai alias PROVIDER_A_* (backward-compat)
-QWEN_API_BASE   = os.environ.get("PROVIDER_A_BASE_URL", os.environ.get("QWEN_API_BASE", ""))
-QWEN_MODEL      = os.environ.get("PROVIDER_A_MODEL",    os.environ.get("QWEN_MODEL",     "qwen-plus"))
-QWEN_MODEL_CANDIDATES = [
-    m.strip() for m in os.environ.get(
-        "PROVIDER_A_MODEL_CANDIDATES",
-        os.environ.get("QWEN_MODEL_CANDIDATES", "qwen-plus")
-    ).split(",")
-    if m.strip()
-]
-
 QUALITY_THRESHOLD = float(os.environ.get("SCRIPT_QUALITY_THRESHOLD", "8.2"))
 
-# Max tokens for scorer (evaluation is lighter than generation)
-SCORER_MAX_TOKENS = 512
+# Scorer needs enough room for a complete JSON verdict, but should not inherit
+# the much larger output budget appropriate for script generation.
+SCORER_MAX_TOKENS = int(os.environ.get("SCRIPT_SCORER_MAX_TOKENS", "1024"))
+
+
+def _score_at_display_precision(value: float) -> float:
+    """Normalize the gate to the one-decimal score shown to operators."""
+    return float(
+        Decimal(str(value)).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+    )
+
+
+def meets_quality_threshold(score: float, threshold: float = QUALITY_THRESHOLD) -> bool:
+    """Return whether a score passes using the precision displayed in logs."""
+    return _score_at_display_precision(score) >= _score_at_display_precision(threshold)
 
 # Dimension weights for overall calculation
 DIMENSION_WEIGHTS = {
@@ -68,7 +71,7 @@ DIMENSION_WEIGHTS = {
 def score_script(
     script_data: dict,
     profile: str = "shorts",
-    scorer_provider: str = "ollama",
+    scorer_provider: str = "provider_b",
     channel: dict | None = None,
 ) -> dict:
     """
@@ -77,7 +80,7 @@ def score_script(
     Args:
         script_data:      Output dict from script_engine (must contain 'script' or 'intro')
         profile:          "shorts" | "long_form"
-        scorer_provider:  "qwen" | "ollama" — which model evaluates this script
+        scorer_provider:  "provider_a" | "provider_b" — which model evaluates this script
                           Should be the OPPOSITE of the generator.
         channel:          Channel dict (for niche/language context). Optional.
 
@@ -97,6 +100,7 @@ def score_script(
             "scorer_provider": str,
         }
     """
+    scorer_provider = _canonical_provider(scorer_provider)
     narration = _extract_narration(script_data, profile)
     if not narration.strip():
         logger.warning("[scorer] Narasi kosong, tidak bisa di-score")
@@ -228,32 +232,49 @@ Return ONLY valid JSON, no markdown, no extra text:
 
 # ─── Provider Calls ───────────────────────────────────────────────────────────
 
+_PROVIDER_ALIASES = {
+    "a": "provider_a",
+    "provider_a": "provider_a",
+    "qwen": "provider_a",
+    "b": "provider_b",
+    "provider_b": "provider_b",
+    "ollama": "provider_b",
+}
+
+
+def _canonical_provider(provider: str) -> str:
+    value = str(provider).strip().lower()
+    return _PROVIDER_ALIASES.get(value, value)
+
+
 def _build_provider_order(scorer_provider: str) -> list[str]:
     """
     Build scorer waterfall order.
-    scorer_provider: "ollama" (alias Provider A) | "qwen" (alias Provider B) | "a" | "b"
+    scorer_provider: "provider_a" | "provider_b" (legacy aliases are accepted)
     Groq always last resort.
     """
+    preferred = _canonical_provider(scorer_provider)
+    if preferred not in ("provider_a", "provider_b"):
+        preferred = "provider_b"
+    fallback = "provider_a" if preferred == "provider_b" else "provider_b"
+
     cfg_a = get_provider_config("a")
     cfg_b = get_provider_config("b")
     has_a = bool(cfg_a["api_key"])
     has_b = bool(cfg_b["api_key"])
 
-    # "ollama" = generator = Provider A → scorer = Provider B
-    # "qwen"   = scorer    = Provider A → scorer = Provider A (cross-score dari generator B)
-    if scorer_provider in ("ollama", "b"):
-        order = (["ollama"] if has_a else []) + (["qwen"] if has_b else [])
-    else:
-        order = (["qwen"] if has_b else []) + (["ollama"] if has_a else [])
+    available = {"provider_a": has_a, "provider_b": has_b}
+    order = [slot for slot in (preferred, fallback) if available[slot]]
 
     order.append("groq")
     return order if order else ["groq"]
 
 
 def _call_provider(provider: str, prompt: str) -> str:
-    if provider in ("qwen", "a"):
+    provider = _canonical_provider(provider)
+    if provider == "provider_a":
         return _call_provider_a(prompt)
-    elif provider in ("ollama", "b"):
+    elif provider == "provider_b":
         return _call_provider_b(prompt)
     elif provider == "groq":
         return _call_groq(prompt)
@@ -263,25 +284,48 @@ def _call_provider(provider: str, prompt: str) -> str:
 def _call_provider_a(prompt: str) -> str:
     """Provider A scorer — OpenAI-compatible (PROVIDER_A_* config)."""
     cfg = get_provider_config("a")
-    return _openai_compat_score(cfg, prompt, label="Provider-A")
+    return _openai_compat_score(
+        cfg,
+        prompt,
+        label="Provider-A",
+        candidates=_scorer_model_candidates(cfg, "a"),
+    )
 
 
 def _call_provider_b(prompt: str) -> str:
     """Provider B scorer — OpenAI-compatible (PROVIDER_B_* config)."""
     cfg = get_provider_config("b")
-    return _openai_compat_score(cfg, prompt, label="Provider-B")
+    return _openai_compat_score(
+        cfg,
+        prompt,
+        label="Provider-B",
+        candidates=_scorer_model_candidates(cfg, "b"),
+    )
 
 
-# Backward-compat aliases
-_call_qwen   = _call_provider_a
-_call_ollama = _call_provider_b
+def _scorer_model_candidates(cfg: dict, slot: str) -> list[str]:
+    """Use a dedicated scorer model when configured, without changing generation."""
+    override = os.environ.get(f"PROVIDER_{slot.upper()}_SCORER_MODEL", "").strip()
+    return [override] if override else cfg["candidates"]
 
 
-def _openai_compat_score(cfg: dict, prompt: str, label: str = "Provider") -> str:
+def _uses_deepseek_v4(cfg: dict, candidates: list[str]) -> bool:
+    base_url = str(cfg.get("base_url", "")).lower()
+    return "api.deepseek.com" in base_url and any(
+        str(model).lower().startswith("deepseek-v4-") for model in candidates
+    )
+
+
+def _openai_compat_score(
+    cfg: dict,
+    prompt: str,
+    label: str = "Provider",
+    candidates: list[str] | None = None,
+) -> str:
     """Generic OpenAI-compatible scoring call."""
     base_url   = cfg["base_url"]
     api_key    = cfg["api_key"]
-    candidates = cfg["candidates"]
+    candidates = candidates or cfg["candidates"]
 
     if not base_url or not api_key:
         raise RuntimeError(f"{label}: base_url atau api_key tidak dikonfigurasi")
@@ -293,31 +337,41 @@ def _openai_compat_score(cfg: dict, prompt: str, label: str = "Provider") -> str
         "Content-Type":  "application/json",
     }
 
+    deepseek_v4 = _uses_deepseek_v4(cfg, candidates)
+
     try:
         for model_name in candidates:
             try:
+                payload = {
+                    "model": model_name,
+                    "messages": [
+                        {
+                            "role": "system",
+                            "content": "You are a strict content quality evaluator. Output JSON only.",
+                        },
+                        {"role": "user", "content": prompt},
+                    ],
+                    "temperature": 0.15,
+                    "top_p":       0.90,
+                    "max_tokens":  SCORER_MAX_TOKENS,
+                    "stream":      False,
+                }
+                # V4 thinks by default. A scorer only needs a concise structured
+                # verdict, so reserve its output budget for the JSON response.
+                if deepseek_v4:
+                    payload["thinking"] = {"type": "disabled"}
+                    payload["response_format"] = {"type": "json_object"}
+
                 resp = session.post(
                     f"{base_url.rstrip('/')}/chat/completions",
                     headers=headers,
-                    json={
-                        "model": model_name,
-                        "messages": [
-                            {
-                                "role": "system",
-                                "content": "You are a strict content quality evaluator. Output JSON only.",
-                            },
-                            {"role": "user", "content": prompt},
-                        ],
-                        "temperature": 0.15,
-                        "top_p":       0.90,
-                        "max_tokens":  SCORER_MAX_TOKENS,
-                        "stream":      False,
-                    },
+                    json=payload,
                     timeout=120,
                 )
                 resp.raise_for_status()
+                response_data = resp.json()
                 content = (
-                    resp.json()
+                    response_data
                     .get("choices", [{}])[0]
                     .get("message", {})
                     .get("content", "")
@@ -326,8 +380,15 @@ def _openai_compat_score(cfg: dict, prompt: str, label: str = "Provider") -> str
                 if content:
                     logger.debug(f"[scorer] {label} ({model_name}) responded")
                     return content
+                finish_reason = response_data.get("choices", [{}])[0].get("finish_reason")
+                logger.warning(
+                    f"[scorer] {label} ({model_name}) response kosong "
+                    f"(finish_reason={finish_reason!r})"
+                )
             except requests.HTTPError as exc:
                 status = exc.response.status_code if exc.response is not None else None
+                detail = exc.response.text[:300] if exc.response is not None else str(exc)
+                logger.warning(f"[scorer] {label} ({model_name}) HTTP {status}: {detail}")
                 if status in (400, 404):
                     continue  # coba model berikutnya
                 raise
@@ -403,7 +464,7 @@ def _parse_score_response(raw: str, scorer_provider: str) -> dict:
         2,
     )
 
-    verdict = "PASS" if overall >= QUALITY_THRESHOLD else "FAIL"
+    verdict = "PASS" if meets_quality_threshold(overall) else "FAIL"
 
     result = {
         **dimensions,
@@ -487,14 +548,3 @@ def _fallback_score(scorer_provider: str, reason: str = "unknown") -> dict:
         "critique":            f"Score tidak tersedia ({reason})",
         "scorer_provider":     scorer_provider,
     }
-
-
-def _qwen_models_to_try() -> list[str]:
-    models: list[str] = []
-    preferred = QWEN_MODEL.strip() if QWEN_MODEL else ""
-    if preferred:
-        models.append(preferred)
-    for model in QWEN_MODEL_CANDIDATES:
-        if model not in models:
-            models.append(model)
-    return models

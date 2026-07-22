@@ -549,7 +549,10 @@ def _search_all_sources(keyword: str, limit: int, profile: str = "shorts") -> li
     orientation = "portrait" if profile == "shorts" else "landscape"
     results     = []
 
-    results += _search_pixabay(keyword, limit, orientation)
+    if os.environ.get("PIXABAY_API_KEY", "").strip():
+        results += _search_pixabay(keyword, limit, orientation)
+    else:
+        logger.debug("PIXABAY_API_KEY tidak ada â€” langsung gunakan Pexels")
 
     if len(results) < 2:
         logger.info(f"Pixabay kurang ({len(results)}) → Pexels")

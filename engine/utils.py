@@ -251,12 +251,13 @@ def require_env(key: str) -> str:
 # PROVIDER_A = Generator utama (default: PROVIDER_A_* env vars)
 # PROVIDER_B = Scorer / cross-evaluator (default: PROVIDER_B_* env vars)
 #
-# Nama lama "ollama" dan "qwen" di-alias ke slot baru agar backward-compatible.
+# Nama lama diterima hanya sebagai alias internal; provider aktif selalu memakai
+# slot canonical "a" atau "b".
 
 def get_provider_config(slot: str) -> dict:
     """
     Return config dict untuk provider slot.
-    slot: "a" | "b" | "ollama" (alias "a") | "qwen" (alias "b")
+    slot: "a" | "b" | "provider_a" | "provider_b"
 
     Returns:
         {
@@ -267,20 +268,23 @@ def get_provider_config(slot: str) -> dict:
         }
     """
     # Normalisasi alias lama ke slot baru
-    _slot = {"ollama": "a", "qwen": "b"}.get(slot.lower(), slot.lower())
+    _slot = {
+        "provider_a": "a",
+        "provider_b": "b",
+        "ollama": "a",
+        "qwen": "a",
+    }.get(slot.lower(), slot.lower())
 
     if _slot == "a":
-        base_url    = os.getenv("PROVIDER_A_BASE_URL", os.getenv("QWEN_API_BASE", "")).strip()
-        api_key     = os.getenv("PROVIDER_A_API_KEY",  os.getenv("QWEN_API_KEY",  "")).strip()
-        model       = os.getenv("PROVIDER_A_MODEL",    os.getenv("QWEN_MODEL",    "qwen-plus")).strip()
-        candidates  = os.getenv("PROVIDER_A_MODEL_CANDIDATES",
-                                os.getenv("QWEN_MODEL_CANDIDATES", model)).strip()
+        base_url    = os.getenv("PROVIDER_A_BASE_URL", "").strip()
+        api_key     = os.getenv("PROVIDER_A_API_KEY", "").strip()
+        model       = os.getenv("PROVIDER_A_MODEL", "").strip()
+        candidates  = os.getenv("PROVIDER_A_MODEL_CANDIDATES", model).strip()
     elif _slot == "b":
-        base_url    = os.getenv("PROVIDER_B_BASE_URL", os.getenv("QWEN_API_BASE", "")).strip()
-        api_key     = os.getenv("PROVIDER_B_API_KEY",  os.getenv("QWEN_API_KEY",  "")).strip()
-        model       = os.getenv("PROVIDER_B_MODEL",    os.getenv("QWEN_MODEL",    "deepseek-chat")).strip()
-        candidates  = os.getenv("PROVIDER_B_MODEL_CANDIDATES",
-                                os.getenv("QWEN_MODEL_CANDIDATES", model)).strip()
+        base_url    = os.getenv("PROVIDER_B_BASE_URL", "").strip()
+        api_key     = os.getenv("PROVIDER_B_API_KEY", "").strip()
+        model       = os.getenv("PROVIDER_B_MODEL", "").strip()
+        candidates  = os.getenv("PROVIDER_B_MODEL_CANDIDATES", model).strip()
     else:
         raise ValueError(f"Provider slot tidak valid: '{slot}'. Gunakan 'a' atau 'b'.")
 
@@ -308,9 +312,9 @@ def get_provider_model(slot: str = "a") -> str:
 
 
 # Backward-compat alias — kode lama yang masih panggil get_ollama_model()
-# akan otomatis pakai PROVIDER_A (slot "a")
+# tetap memakai Provider-A (slot "a").
 def get_ollama_model() -> str:
     logger = get_logger("provider_rotator")
     model = get_provider_model("a")
-    logger.info(f"Ollama Model selected from OLLAMA_MODEL: {model}")
+    logger.info(f"Provider-A model selected: {model}")
     return model

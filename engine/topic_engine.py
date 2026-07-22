@@ -99,8 +99,6 @@ _ITERATION_SUFFIX = {
 _ITERATED_MARKER = "__iterated__"
 TOPIC_RECENT_WINDOW = 20
 TOPIC_SELECTOR_MAX_CANDIDATES = 14
-QWEN_API_BASE = os.environ.get("QWEN_API_BASE", "http://localhost:9000/v1")
-QWEN_MODEL = os.environ.get("QWEN_MODEL", "qwen3-235b-a22b")
 OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
 
 
@@ -266,6 +264,38 @@ def _generate_via_ai(niche: str, language: str, hints=None) -> str:
     return _topic_fallback(niche, language)
 
 
+def _uses_deepseek_v4(cfg: dict, model_name: str) -> bool:
+    return (
+        "api.deepseek.com" in str(cfg.get("base_url", "")).lower()
+        and str(model_name).lower().startswith("deepseek-v4-")
+    )
+
+
+def _build_topic_request_payload(cfg: dict, model_name: str, prompt: str) -> dict:
+    payload = {
+        "model": model_name,
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.85,
+        "top_p": 0.95,
+        "max_tokens": 400,
+    }
+    if _uses_deepseek_v4(cfg, model_name):
+        payload["thinking"] = {"type": "disabled"}
+        payload["response_format"] = {"type": "json_object"}
+    return payload
+
+
+def _parse_topic_list(raw: str) -> list[str]:
+    cleaned = (raw or "").strip()
+    if not cleaned:
+        raise ValueError("Provider mengembalikan content kosong")
+    cleaned = cleaned.replace("```json", "").replace("```", "").strip()
+    parsed = json.loads(cleaned)
+    if isinstance(parsed, dict):
+        parsed = parsed.get("topics", [])
+    return _clean_topic_list(parsed)
+
+
 def _generate_candidates_via_ai(niche: str, language: str, hints=None,
                                 recent_topics: list[str] | None = None) -> list[str]:
     lang_label = "Bahasa Indonesia" if language == "id" else "English"
@@ -287,7 +317,8 @@ def _generate_candidates_via_ai(niche: str, language: str, hints=None,
 
     prompt = (
         f"Berikan 10 ide topik video short-form viral tentang {niche_label} "
-        f"dalam {lang_label}. Format: JSON array of strings. Tidak ada teks lain."
+        f'dalam {lang_label}. Format wajib: JSON object {{"topics": ["topik 1"]}}. '
+        f"Tidak ada teks lain."
         f"{hints_text}"
     )
 
@@ -304,19 +335,15 @@ def _generate_candidates_via_ai(niche: str, language: str, hints=None,
                     "Authorization": f"Bearer {cfg_a['api_key']}",
                     "Content-Type": "application/json",
                 },
-                json={
-                    "model": model_name,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "temperature": 0.85,
-                    "top_p": 0.95,
-                    "max_tokens": 400,
-                },
+                json=_build_topic_request_payload(cfg_a, model_name, prompt),
                 timeout=120,
             )
             resp.raise_for_status()
             raw = resp.json()["choices"][0]["message"]["content"].strip()
-            cleaned = raw.replace("```json", "").replace("```", "").strip()
-            return _clean_topic_list(json.loads(cleaned))
+            topics = _parse_topic_list(raw)
+            if topics:
+                return topics
+            raise ValueError("Provider tidak mengembalikan topik valid")
         except Exception as exc:
             logger.warning(f"Provider A topic failed: {exc} -> trying Provider B...")
         finally:
@@ -335,19 +362,15 @@ def _generate_candidates_via_ai(niche: str, language: str, hints=None,
                     "Authorization": f"Bearer {cfg_b['api_key']}",
                     "Content-Type": "application/json",
                 },
-                json={
-                    "model": model_name,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "temperature": 0.85,
-                    "top_p": 0.95,
-                    "max_tokens": 400,
-                },
+                json=_build_topic_request_payload(cfg_b, model_name, prompt),
                 timeout=120,
             )
             resp.raise_for_status()
             raw = resp.json()["choices"][0]["message"]["content"].strip()
-            cleaned = raw.replace("```json", "").replace("```", "").strip()
-            return _clean_topic_list(json.loads(cleaned))
+            topics = _parse_topic_list(raw)
+            if topics:
+                return topics
+            raise ValueError("Provider tidak mengembalikan topik valid")
         except Exception as exc:
             logger.warning(f"Provider B topic failed: {exc} -> trying Groq...")
         finally:

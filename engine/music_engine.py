@@ -19,7 +19,7 @@ import random
 import re
 import shutil
 import requests
-from engine.utils import get_logger, channel_data_path, get_ollama_model
+from engine.utils import get_logger, channel_data_path, get_provider_config, get_provider_model
 
 logger = get_logger("music_engine")
 
@@ -40,9 +40,6 @@ AUTO_MUSIC_PROMOTE_FETCHED = _env_flag("AUTO_MUSIC_PROMOTE_FETCHED", True)
 LOCAL_MUSIC_MIN_TRACKS = int(os.environ.get("LOCAL_MUSIC_MIN_TRACKS", "10"))
 MUSIC_AI_SELECTION = _env_flag("MUSIC_AI_SELECTION", True)
 MUSIC_SELECTION_MAX_CANDIDATES = int(os.environ.get("MUSIC_SELECTION_MAX_CANDIDATES", "10"))
-QWEN_API_BASE = os.environ.get("QWEN_API_BASE", "http://localhost:9000/v1")
-QWEN_MODEL = os.environ.get("QWEN_MODEL", "qwen3-235b-a22b")
-OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
 
 MIXKIT_MOOD_PAGES = {
     "dark ambient": "https://mixkit.co/free-stock-music/ambient/",
@@ -540,88 +537,81 @@ def _build_music_choice_prompt(mood: str, candidates: list[dict], script_data: d
 
 
 def _music_ai_provider_order() -> list[str]:
-    providers = ["ollama"]
-    if os.getenv("QWEN_API_KEY"):
-        providers.insert(0, "qwen")
+    providers = []
+    for slot, provider in (("a", "provider_a"), ("b", "provider_b")):
+        cfg = get_provider_config(slot)
+        if cfg["base_url"] and cfg["api_key"]:
+            providers.append(provider)
     return providers
 
 
 def _call_music_ai_provider(provider: str, prompt: str) -> str:
-    if provider == "qwen":
-        api_key = os.getenv("QWEN_API_KEY", "")
-        if not api_key:
-            raise RuntimeError("QWEN_API_KEY tidak tersedia")
-        qwen_models = [QWEN_MODEL] + [
-            m for m in os.environ.get(
-                "QWEN_MODEL_CANDIDATES",
-                "qwen3-235b-a22b,qwen3-30b-a3b,qwen3-turbo"
-            ).split(",")
-            if m.strip() and m.strip() != QWEN_MODEL
-        ]
-        last_err = None
-        for model_name in qwen_models:
-            session = _download_session()
+    slot = {"provider_a": "a", "provider_b": "b"}.get(provider)
+    if not slot:
+        raise ValueError(f"Music AI provider tidak dikenal: {provider}")
+
+    cfg = get_provider_config(slot)
+    base_url = cfg["base_url"]
+    api_key = cfg["api_key"]
+    if not base_url or not api_key:
+        raise RuntimeError(f"Provider-{slot.upper()} base_url atau api_key tidak dikonfigurasi")
+
+    preferred_model = get_provider_model(slot)
+    models_to_try = [preferred_model] + [
+        model for model in cfg["candidates"] if model != preferred_model
+    ]
+    session = _download_session()
+    try:
+        for model_name in models_to_try:
+            payload = {
+                "model": model_name,
+                "messages": [
+                    {"role": "system", "content": "You are a music supervisor for short-form video. Output JSON only."},
+                    {"role": "user", "content": prompt},
+                ],
+                "temperature": 0.20,
+                "top_p": 0.90,
+                "max_tokens": 200,
+                "stream": False,
+                "response_format": {"type": "json_object"},
+            }
+            if (
+                "api.deepseek.com" in base_url.lower()
+                and model_name.lower().startswith("deepseek-v4-")
+            ):
+                payload["thinking"] = {"type": "disabled"}
+
             try:
                 resp = session.post(
-                    f"{QWEN_API_BASE.rstrip('/')}/chat/completions",
+                    f"{base_url.rstrip('/')}/chat/completions",
                     headers={
                         "Authorization": f"Bearer {api_key}",
                         "Content-Type": "application/json",
                     },
-                    json={
-                        "model": model_name,
-                        "messages": [
-                            {"role": "system", "content": "You are a music supervisor for short-form video. Output JSON only."},
-                            {"role": "user", "content": prompt},
-                        ],
-                        # Selector: deterministik (Qwen: no seed/top_k)
-                        "temperature":       0.20,
-                        "top_p":             0.90,
-                        "frequency_penalty": 0.0,
-                        "max_tokens":        200,
-                    },
+                    json=payload,
                     timeout=45,
                 )
                 resp.raise_for_status()
-                return resp.json()["choices"][0]["message"]["content"]
+                content = (
+                    resp.json()
+                    .get("choices", [{}])[0]
+                    .get("message", {})
+                    .get("content", "")
+                    .strip()
+                )
+                if content:
+                    return content
+                logger.warning(f"Music AI Provider-{slot.upper()} ({model_name}) memberi respons kosong")
             except requests.HTTPError as exc:
                 status = exc.response.status_code if exc.response is not None else None
-                last_err = exc
                 if status in (400, 404):
-                    continue  # Coba model berikutnya
+                    logger.warning(f"Music AI Provider-{slot.upper()} ({model_name}) HTTP {status}; coba kandidat berikutnya")
+                    continue
                 raise
-            except Exception as exc:
-                last_err = exc
-                raise
-            finally:
-                session.close()
-        raise RuntimeError(f"Music Qwen gagal semua model: {last_err}")
+    finally:
+        session.close()
 
-    resp = requests.post(
-        f"{OLLAMA_BASE_URL}/chat/completions", headers={"Authorization": f'Bearer {os.environ.get("OLLAMA_API_KEY")}'} if os.environ.get("OLLAMA_API_KEY") else {},
-        json={
-            "model": get_ollama_model(),
-            "messages": [
-                {"role": "system", "content": "You are a music supervisor for short-form video. Output JSON only."},
-                {"role": "user", "content": prompt},
-            ],
-            "stream": False,
-            "format": "json",
-            "options": {
-                # Selector: deterministik
-                "temperature":    0.20,
-                "top_p":          0.90,
-                "top_k":          20,
-                "repeat_penalty": 1.0,
-                "num_predict":    200,
-                "num_ctx":        4096,
-                "seed":           42,
-            },
-        },
-        timeout=45,
-    )
-    resp.raise_for_status()
-    return resp.json().get("message", {}).get("content", "")
+    raise RuntimeError(f"Music AI Provider-{slot.upper()}: semua kandidat model gagal")
 
 
 def _fallback_track_title(path: str, mood: str) -> str:

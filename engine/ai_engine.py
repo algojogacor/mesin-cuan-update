@@ -39,7 +39,7 @@ NVIDIA_VISION_MODEL = "meta/llama-4-maverick-17b-128e-instruct"
 
 # ── Ollama fallback config ─────────────────────────────────────────────────────
 OLLAMA_BASE_URL     = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-OLLAMA_VISION_MODEL = "qwen3-vl:235b-cloud"
+OLLAMA_VISION_MODEL = os.getenv("OLLAMA_VISION_MODEL", "llava:latest")
 
 # ── Frame sampling ─────────────────────────────────────────────────────────────
 FRAME_INTERVAL_SEC = 3

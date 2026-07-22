@@ -51,7 +51,7 @@ Imagine having a complete production team — trend researcher, scriptwriter, vo
 | **Data Privacy** | ✅ | ❌ Shared with editor | ❌ Uploaded to cloud | **✅ 100% local** |
 | **24/7 Operation** | ❌ | ❌ | ❌ | **✅ Autonomous** |
 
-The secret sauce: **Qwen + Ollama generate scripts in parallel**, then **cross-score each other** to eliminate AI slop before it reaches production.
+The core flow: **Provider-A (Mistral) + Provider-B (DeepSeek) generate scripts in parallel**, then **cross-score each other** to eliminate AI slop before it reaches production.
 
 ---
 
@@ -64,8 +64,8 @@ The secret sauce: **Qwen + Ollama generate scripts in parallel**, then **cross-s
     ┌───────────────────────────────────┴───────────────────────────────┐
     │                    DUAL PARALLEL AI GENERATION                     │
     │  ┌──────────┐     cross-score     ┌──────────┐                    │
-    │  │   QWEN   │ ←───────────────→ │  OLLAMA  │                    │
-    │  │ self-host │                    │  local   │                    │
+    │  │ PROVIDER-A│ ←───────────────→ │PROVIDER-B│                    │
+    │  │  Mistral  │                    │ DeepSeek │                    │
     │  └────┬─────┘                    └────┬─────┘                    │
     │       └──────────┬───────────────────┘                          │
     │                  ↓                                              │
@@ -87,7 +87,7 @@ The secret sauce: **Qwen + Ollama generate scripts in parallel**, then **cross-s
 Real-time trend intelligence combining **YouTube Data API v3**, **Google Trends**, and **YouTube Search Suggestions** — refreshed every 6 hours.
 
 ### 🧠 Dual Parallel AI Scripting
-**Qwen + Ollama generate scripts in parallel**, then cross-score each other (anti-sycophancy). Highest-scoring script proceeds to production. Fallback chain: Ollama → Qwen → Groq.
+**Provider-A (Mistral) + Provider-B (DeepSeek) generate scripts in parallel**, then cross-score each other (anti-sycophancy). Highest-scoring script proceeds to production. Fallback chain: Provider-A → Provider-B → Groq.
 
 ### 🎯 Script Quality Scorer
 Multi-dimensional scoring: **hook strength**, **curiosity gap**, **pacing**, **emotional impact**, **retention prediction** — scripts below threshold are auto-rewritten.
@@ -126,7 +126,7 @@ ETA prediction for multi-channel batch renders — accurate estimation before ex
 | Layer | Technology | Role |
 |---|---|---|
 | **Language** | Python 3.11+ | Pipeline orchestration |
-| **AI Primary** | Qwen self-hosted + Ollama | Dual parallel script generation + cross-scoring |
+| **AI Primary** | Provider-A Mistral + Provider-B DeepSeek | Dual parallel script generation + cross-scoring |
 | **AI Quality** | Script Quality Scorer | Multi-dimensional validation |
 | **AI Vision QC** | NVIDIA API / Ollama Vision | Automated quality control |
 | **AI Fallback** | Groq | Last-resort script generation |
@@ -240,7 +240,8 @@ python main.py --debug
 | Key | Provider | Purpose | Get It Here |
 |---|---|---|---|
 | `GEMINI_API_KEY` | Google Gemini | **Recommended** — script generation & QC Vision | [aistudio.google.com/apikey](https://aistudio.google.com/apikey) |
-| `QWEN_API_KEY` | Qwen DashScope | Dual parallel AI script generation | [dashscope.console.aliyun.com](https://dashscope.console.aliyun.com/apiKey) |
+| `PROVIDER_A_API_KEY` | NVIDIA NIM / Mistral Large 3 | Primary script generation | [integrate.api.nvidia.com](https://integrate.api.nvidia.com) |
+| `PROVIDER_B_API_KEY` | DeepSeek V4 Pro | Scoring and evaluation | [platform.deepseek.com](https://platform.deepseek.com) |
 | `GROQ_API_KEY` | Groq | Fast fallback LLM | [console.groq.com/keys](https://console.groq.com/keys) |
 
 > ⚠️ Without an AI Provider, script generation won't run. Fill in at least 1.

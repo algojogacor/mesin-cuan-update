@@ -87,9 +87,12 @@ API_KEY_SPECS = {
         ("GEMINI_API_KEY", "Google Gemini AI",
          "AI utama — script generation & QC Vision (REKOMENDASI)",
          "https://aistudio.google.com/apikey"),
-        ("QWEN_API_KEY", "Qwen DashScope",
-         "Dual parallel AI script generation",
-         "https://dashscope.console.aliyun.com/apiKey"),
+        ("PROVIDER_A_API_KEY", "Provider-A (Mistral)",
+         "AI utama untuk kualitas tulisan dan gaya bahasa",
+         "https://integrate.api.nvidia.com"),
+        ("PROVIDER_B_API_KEY", "Provider-B (DeepSeek)",
+         "Scorer/evaluator untuk logika dan quality gate",
+         "https://platform.deepseek.com"),
         ("GROQ_API_KEY", "Groq",
          "Fallback LLM cepat",
          "https://console.groq.com/keys"),
@@ -256,7 +259,7 @@ def api_key_wizard():
         print(f"     Jalankan `python main.py --setup` lagi kapan saja.\n")
     if ai_provider_count == 0:
         # Cek apakah sudah ada AI key di existing (sebelum wizard)
-        existing_ai = sum(1 for k in ["GEMINI_API_KEY", "QWEN_API_KEY", "GROQ_API_KEY"]
+        existing_ai = sum(1 for k in ["GEMINI_API_KEY", "PROVIDER_A_API_KEY", "PROVIDER_B_API_KEY", "GROQ_API_KEY"]
                          if existing.get(k))
         if existing_ai == 0:
             print(f"  ⚠️  Peringatan: tidak ada AI Provider yang diisi!")
@@ -270,7 +273,7 @@ _CLEAN_SUBDIRS = ("audio", "footage", "temp")
 PIPELINE_STAGE_WORKERS = {
     "script": 1,
     "prep": 1,
-    "render": 1,
+    "render": 2,
     "post": 1,
 }
 

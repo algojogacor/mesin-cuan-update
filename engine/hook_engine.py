@@ -18,15 +18,6 @@ from engine.memory_engine import get_recent_creative_memory
 logger = get_logger("hook_engine")
 
 OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
-QWEN_API_BASE = os.environ.get("QWEN_API_BASE", "http://localhost:9000/v1")
-QWEN_MODEL = os.environ.get("QWEN_MODEL", "qwen3-235b-a22b")
-QWEN_MODEL_CANDIDATES = [
-    m.strip() for m in os.environ.get(
-        "QWEN_MODEL_CANDIDATES",
-        "qwen3-235b-a22b,qwen3-plus,qwen2.5-72b-instruct,qwen3-30b-a3b,qwen3-turbo"
-    ).split(",")
-    if m.strip()
-]
 HOOK_MIN_SCORE = float(os.environ.get("HOOK_MIN_SCORE", "8.7"))
 
 HOOK_TEMPLATES = {
@@ -288,8 +279,6 @@ def _evaluate_and_upgrade_horror_hook(script_data: dict, channel: dict) -> dict:
 def _review_horror_hook(script_data: dict, channel: dict) -> dict | None:
     prompt = _build_horror_hook_review_prompt(script_data, channel)
     providers = []
-    if os.getenv("QWEN_API_KEY"):
-        providers.append("qwen")
     if os.getenv("GROQ_API_KEY"):
         providers.append("groq")
     providers.append("ollama")
@@ -382,37 +371,6 @@ def _call_hook_provider(provider: str, prompt: str) -> str:
         )
         return resp.choices[0].message.content.strip()
 
-    if provider == "qwen":
-        last_error = None
-        for model_name in _qwen_models_to_try():
-            session = requests.Session()
-            session.trust_env = False
-            try:
-                resp = session.post(
-                    f"{QWEN_API_BASE.rstrip('/')}/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {require_env('QWEN_API_KEY')}",
-                        "Content-Type": "application/json",
-                    },
-                    json={
-                        "model": model_name,
-                        "messages": [
-                            {"role": "system", "content": "You are a horror hook editor. Output JSON only."},
-                            {"role": "user", "content": prompt},
-                        ],
-                        "temperature": 0.25,
-                        "max_tokens": 1200,   # 500 terlalu kecil — JSON terpotong di char 857/1426
-                    },
-                    timeout=45,
-                )
-                resp.raise_for_status()
-                return resp.json()["choices"][0]["message"]["content"]
-            except Exception as exc:
-                last_error = exc
-            finally:
-                session.close()
-        raise RuntimeError(f"Hook Qwen gagal di semua model: {last_error}")
-
     payload = {
         "model": get_ollama_model(),
         "messages": [
@@ -456,8 +414,6 @@ def _parse_hook_json(raw: str) -> dict:
 def _generate_horror_hook_variants(script_data: dict, channel: dict, review: dict | None = None) -> dict | None:
     prompt = _build_horror_hook_variant_prompt(script_data, channel, review=review)
     providers = []
-    if os.getenv("QWEN_API_KEY"):
-        providers.append("qwen")
     if os.getenv("GROQ_API_KEY"):
         providers.append("groq")
     providers.append("ollama")
@@ -578,14 +534,3 @@ def _to_score(value, fallback: float = 0.0) -> float:
         return round(float(value), 1)
     except Exception:
         return round(float(fallback), 1)
-
-
-def _qwen_models_to_try() -> list[str]:
-    models: list[str] = []
-    preferred = QWEN_MODEL.strip() if QWEN_MODEL else ""
-    if preferred:
-        models.append(preferred)
-    for model in QWEN_MODEL_CANDIDATES:
-        if model not in models:
-            models.append(model)
-    return models

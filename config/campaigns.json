@@ -28,19 +28,19 @@
       "active": true,
       "schedule": {
         "type": "range",
-        "start_date": "2026-06-14",
-        "end_date": "2026-06-16"
+        "start_date": "2026-08-21",
+        "end_date": "2026-08-31"
       },
       "per_channel": {
         "ch_id_horror": {
           "shorts_per_day": 3,
           "long_form_per_day": 0,
-          "publish_hours_wib": [7, 10, 13, 16, 19]
+          "publish_hours_wib": [13, 16, 19]
         },
         "ch_id_psych": {
           "shorts_per_day": 1,
           "long_form_per_day": 0,
-          "publish_hours_wib": [7, 10, 13, 16, 19]
+          "publish_hours_wib": [13, 16, 19]
         },
         "ch_en_horror": {
           "shorts_per_day": 1,

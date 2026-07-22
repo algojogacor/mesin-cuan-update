@@ -1,9 +1,9 @@
 """
 script_engine.py - Generate script narasi video dari topik
 
-Primary  : Dual Parallel Generation (Qwen + Ollama) dengan Cross-Provider Scoring
-           Generator A: Qwen   → Scored by: Ollama
-           Generator B: Ollama → Scored by: Qwen
+Primary  : Dual Parallel Generation (Provider-A + Provider-B) dengan Cross-Provider Scoring
+           Generator A: Provider-A → Scored by: Provider-B
+           Generator B: Provider-B → Scored by: Provider-A
            Winner (score tertinggi) yang lanjut ke TTS.
 Fallback : Sequential waterfall jika parallel gagal/score < threshold
            Groq → Gemini → Anthropic (Groq TIDAK pernah jadi primary)
@@ -48,17 +48,6 @@ AI_SCHEMA_REPAIR_MAX_CHARS = int(os.environ.get("AI_SCHEMA_REPAIR_MAX_CHARS", "1
 
 # Provider config — dibaca langsung dari get_provider_config() saat runtime
 # sehingga perubahan .env langsung efektif tanpa restart (untuk testing).
-# QWEN_* tetap dibaca sebagai alias PROVIDER_A_* untuk backward-compat.
-QWEN_API_BASE   = os.environ.get("PROVIDER_A_BASE_URL", os.environ.get("QWEN_API_BASE",   ""))
-QWEN_MODEL      = os.environ.get("PROVIDER_A_MODEL",    os.environ.get("QWEN_MODEL",      "qwen-plus"))
-QWEN_MODEL_CANDIDATES = [
-    m.strip() for m in os.environ.get(
-        "QWEN_MODEL_CANDIDATES",
-        "qwen3-235b-a22b,qwen3-plus,qwen2.5-72b-instruct,qwen3-30b-a3b,qwen3-turbo"
-    ).split(",")
-    if m.strip()
-]
-
 SHORTS_REVIEW_MIN_SCORE = float(os.environ.get("SHORTS_REVIEW_MIN_SCORE", "9.2"))
 SHORTS_REVIEW_MAX_PASSES = 2
 SCRIPT_MAX_TOKENS_SHORTS = int(os.environ.get("SCRIPT_MAX_TOKENS_SHORTS", "2400"))
@@ -82,17 +71,6 @@ def _post_json_no_proxy(url: str, headers: dict | None = None, payload: dict | N
         return session.post(url, headers=headers, json=payload, timeout=timeout)
     finally:
         session.close()
-
-
-def _qwen_models_to_try() -> list[str]:
-    models: list[str] = []
-    preferred = QWEN_MODEL.strip() if QWEN_MODEL else ""
-    if preferred:
-        models.append(preferred)
-    for model in QWEN_MODEL_CANDIDATES:
-        if model not in models:
-            models.append(model)
-    return models
 
 
 def generate(topic_data: dict, channel: dict, profile: str = "shorts") -> dict:
@@ -227,14 +205,15 @@ def review_hook_only(script_data: dict, channel: dict, profile: str = "shorts") 
 
 
 def _call_ai(system_prompt: str, user_message: str, profile: str = "shorts") -> dict:
-    # Provider-A (Qwen) untuk script generation
-    # Provider-B (DeepSeek) sebagai generator kedua (bukan scorer)
-    primary_providers = [
-        ("DeepSeek/Ollama", lambda: _call_provider_b(system_prompt, user_message, profile)),
-    ]
-    if os.getenv("QWEN_API_KEY") or os.getenv("PROVIDER_A_API_KEY"):
-        primary_providers.append(("Qwen", lambda: _call_qwen(system_prompt, user_message, profile)))
-    random.shuffle(primary_providers)
+    # Provider-A is the preferred writer. Provider-B remains a generation
+    # fallback for resilience, while its primary role is evaluation.
+    cfg_a = get_provider_config("a")
+    cfg_b = get_provider_config("b")
+    primary_providers = []
+    if cfg_a["base_url"] and cfg_a["api_key"]:
+        primary_providers.append(("Provider-A", lambda: _call_provider_a(system_prompt, user_message, profile)))
+    if cfg_b["base_url"] and cfg_b["api_key"]:
+        primary_providers.append(("Provider-B", lambda: _call_provider_b(system_prompt, user_message, profile)))
 
     # Groq sebagai last-resort fallback saja
     providers = primary_providers + [
@@ -251,7 +230,7 @@ def _call_ai(system_prompt: str, user_message: str, profile: str = "shorts") -> 
         except Exception as e:
             last_error = e
             logger.warning(f"\u274c {name} gagal: {e}")
-            if name not in ("DeepSeek/Ollama", "Qwen"):
+            if name not in ("Provider-A", "Provider-B"):
                 logger.info(f"Tunggu {PROVIDER_SWITCH_DELAY}s sebelum provider berikutnya...")
                 time.sleep(PROVIDER_SWITCH_DELAY)
 
@@ -277,35 +256,40 @@ def _generate_and_pick_best(
     Kembalikan script dengan skor tertinggi dari semua percobaan.
 
     Strategi anti-sycophancy:
-      Generator Qwen   → di-score oleh Ollama
-      Generator Ollama → di-score oleh Qwen
+      Generator Provider-A → di-score oleh Provider-B
+      Generator Provider-B → di-score oleh Provider-A
 
     Return:
       dict  — script terbaik setelah semua retry (bisa di bawah threshold)
       None  — signal agar caller fallback ke _call_ai() jika kedua generator gagal
     """
-    from engine.script_quality_scorer import score_script
+    from engine.script_quality_scorer import meets_quality_threshold, score_script
 
-    qwen_available = bool(os.getenv("QWEN_API_KEY"))
-    if not qwen_available:
-        logger.info(f"[{ch_id}] QWEN_API_KEY tidak ada — skip parallel, gunakan sequential")
+    cfg_a = get_provider_config("a")
+    cfg_b = get_provider_config("b")
+    providers_available = all(
+        cfg.get("base_url") and cfg.get("api_key")
+        for cfg in (cfg_a, cfg_b)
+    )
+    if not providers_available:
+        logger.info(f"[{ch_id}] Provider-A/Provider-B belum lengkap — skip parallel, gunakan sequential")
         return None
 
-    CROSS_SCORER = {"qwen": "ollama", "ollama": "qwen"}
+    cross_scorer = {"provider_a": "provider_b", "provider_b": "provider_a"}
 
     # Simpan skor terbaik lintas semua percobaan
     best_score_ever: float = -1.0
     best_script_ever: dict | None = None
 
     for attempt in range(1, PARALLEL_MAX_RETRIES + 1):
-        logger.info(f"[{ch_id}] ⚡ Parallel generation attempt {attempt}/{PARALLEL_MAX_RETRIES}: Qwen + Ollama ...")
+        logger.info(f"[{ch_id}] ⚡ Parallel generation attempt {attempt}/{PARALLEL_MAX_RETRIES}: Provider-A + Provider-B ...")
 
         # ── Step 1: Generate paralel ─────────────────────────────────────────
         generator_results: dict[str, dict | Exception] = {}
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
             futures = {
-                "qwen":   executor.submit(_call_qwen,  system_prompt, user_message, profile),
-                "ollama": executor.submit(_call_ollama, system_prompt, user_message, profile),
+                "provider_a": executor.submit(_call_provider_a, system_prompt, user_message, profile),
+                "provider_b": executor.submit(_call_provider_b, system_prompt, user_message, profile),
             }
             for generator, future in futures.items():
                 try:
@@ -325,34 +309,44 @@ def _generate_and_pick_best(
 
         # ── Step 2: Cross-score (anti-sycophancy) ────────────────────────────
         scored: list[tuple[float, str, dict, dict]] = []
-        for generator, script_data in successful.items():
-            scorer_provider = CROSS_SCORER[generator]
-            try:
-                quality = score_script(
+        with concurrent.futures.ThreadPoolExecutor(max_workers=len(successful)) as executor:
+            scoring_futures = {
+                generator: (
                     script_data,
-                    profile=profile,
-                    scorer_provider=scorer_provider,
-                    channel=channel,
+                    cross_scorer[generator],
+                    executor.submit(
+                        score_script,
+                        script_data,
+                        profile=profile,
+                        scorer_provider=cross_scorer[generator],
+                        channel=channel,
+                    ),
                 )
-                overall = quality.get("overall", 0.0)
-                scored.append((overall, generator, script_data, quality))
-                logger.info(
-                    f"[{ch_id}] [scorer] {generator} → dinilai {scorer_provider}: "
-                    f"{overall:.1f} ({quality.get('verdict', '?')}) | "
-                    f"hook={quality.get('hook_strength')} curiosity={quality.get('curiosity_gap')}"
-                )
-            except Exception as exc:
-                logger.warning(
-                    f"[{ch_id}] [scorer] Scoring {generator} gagal: {exc} — skor fallback 5.0"
-                )
-                scored.append((5.0, generator, script_data, {"overall": 5.0, "verdict": "SCORE_FAILED"}))
+                for generator, script_data in successful.items()
+            }
 
+            for generator, (script_data, scorer_provider, future) in scoring_futures.items():
+                try:
+                    quality = future.result()
+                    overall = quality.get("overall", 0.0)
+                    scored.append((overall, generator, script_data, quality))
+                    logger.info(
+                        f"[{ch_id}] [scorer] {generator} scored_by {scorer_provider}: "
+                        f"{overall:.1f} ({quality.get('verdict', '?')}) | "
+                        f"hook={quality.get('hook_strength')} curiosity={quality.get('curiosity_gap')}"
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        f"[{ch_id}] [scorer] Scoring {generator} failed: {exc}; fallback score 5.0"
+                    )
+                    scored.append((5.0, generator, script_data, {"overall": 5.0, "verdict": "SCORE_FAILED"}))
+
+        # â”€â”€ Step 3: Cek skor terbaik attempt ini â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if not scored:
-            logger.warning(f"[{ch_id}] Attempt {attempt}: semua scoring gagal")
+            logger.warning(f"[{ch_id}] Attempt {attempt}: all scoring failed")
             continue
 
-        # ── Step 3: Cek skor terbaik attempt ini ─────────────────────────────
-        scored.sort(key=lambda x: x[0], reverse=True)
+        scored.sort(key=lambda item: item[0], reverse=True)
         attempt_score, attempt_generator, attempt_script, attempt_quality = scored[0]
         attempt_script["quality_score"] = attempt_quality
 
@@ -360,22 +354,26 @@ def _generate_and_pick_best(
             best_score_ever  = attempt_score
             best_script_ever = attempt_script
             logger.info(
-                f"[{ch_id}] 🏆 New best: {attempt_generator} score={attempt_score:.1f} "
+                f"[{ch_id}] New best: {attempt_generator} score={attempt_score:.1f} "
                 f"(attempt {attempt}/{PARALLEL_MAX_RETRIES})"
             )
 
-        if attempt_score >= SCRIPT_QUALITY_THRESHOLD:
+        if meets_quality_threshold(attempt_score, SCRIPT_QUALITY_THRESHOLD):
             logger.info(
-                f"[{ch_id}] ✅ Parallel winner: {attempt_generator} "
+                f"[{ch_id}] Parallel winner: {attempt_generator} "
                 f"(score={attempt_score:.1f} >= threshold={SCRIPT_QUALITY_THRESHOLD}) "
                 f"setelah {attempt} percobaan"
             )
             return best_script_ever
 
         logger.info(
-            f"[{ch_id}] ⚠️  Attempt {attempt}: score={attempt_score:.1f} < threshold={SCRIPT_QUALITY_THRESHOLD} "
-            + (f"— retry..." if attempt < PARALLEL_MAX_RETRIES else "— semua retry habis")
+            f"[{ch_id}] Attempt {attempt}: score={attempt_score:.1f} < threshold={SCRIPT_QUALITY_THRESHOLD} "
+            + (f"â€” retry..." if attempt < PARALLEL_MAX_RETRIES else "â€” semua retry habis")
         )
+
+        continue
+
+        # ── Step 3: Cek skor terbaik attempt ini ─────────────────────────────
 
     # Setelah semua retry habis: kembalikan script terbaik yang pernah didapat
     if best_script_ever is not None:
@@ -392,10 +390,10 @@ def _generate_and_pick_best(
 
 # ─── DeepSeek via Ollama ──────────────────────────────────────────────────────
 
-def _call_ollama(system_prompt: str, user_message: str, profile: str) -> dict:
+def _call_provider_a(system_prompt: str, user_message: str, profile: str) -> dict:
     """
     Provider A — OpenAI-compatible generator.
-    Dikonfigurasi via PROVIDER_A_* di .env (alias: OLLAMA_*).
+    Dikonfigurasi via PROVIDER_A_* di .env.
     """
     cfg = get_provider_config("a")
     base_url = cfg["base_url"]
@@ -493,6 +491,10 @@ def _call_ollama(system_prompt: str, user_message: str, profile: str) -> dict:
                     break
 
     raise RuntimeError(f"Provider-A: semua model/attempt gagal. Error terakhir: {last_error}")
+
+
+# Backward-compatible name for older internal callers.
+_call_ollama = _call_provider_a
 
 
 # ─── Provider-B (DeepSeek) ────────────────────────────────────────────────────
@@ -600,89 +602,6 @@ def _call_provider_b(system_prompt: str, user_message: str, profile: str) -> dic
 
 
 # ─── Groq ─────────────────────────────────────────────────────────────────────
-
-def _call_qwen(system_prompt: str, user_message: str, profile: str) -> dict:
-    max_tokens = SCRIPT_MAX_TOKENS_LONGFORM if profile == "long_form" else SCRIPT_MAX_TOKENS_SHORTS
-    api_key = require_env("QWEN_API_KEY")
-    # Timeout dinaikkan ke 600s karena Qwen proxy bisa lambat
-    qwen_timeout = int(os.environ.get("QWEN_TIMEOUT", "600"))
-    max_attempts = 3 if profile == "shorts" else MAX_JSON_RETRY
-
-    system_with_json = (
-        system_prompt +
-        "\n\nCRITICAL: Respond with ONLY a raw JSON object. "
-        "No markdown, no ```json fences, no explanation. "
-        "Start directly with { and end with }."
-    )
-
-    last_error = None
-    for model_name in _qwen_models_to_try():
-        for attempt in range(1, max_attempts + 1):
-            user_msg = user_message + _get_length_hint(profile)
-            if attempt > 1:
-                user_msg += (
-                    f"\n\n[ATTEMPT {attempt}] IMPORTANT: Output ONLY valid JSON. "
-                    "No markdown, no prose, no code fences."
-                )
-
-            try:
-                resp = _post_json_no_proxy(
-                    f"{QWEN_API_BASE.rstrip('/')}/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {api_key}",
-                        "Content-Type": "application/json",
-                    },
-                    payload={
-                        "model": model_name,
-                        "messages": [
-                            {"role": "system", "content": system_with_json},
-                            {"role": "user", "content": user_msg},
-                        ],
-                        # Generator: high creativity (Qwen: no top_k/seed support)
-                        "temperature":       max(0.7, 1.10 - (attempt - 1) * 0.10),
-                        "top_p":             0.98,
-                        "frequency_penalty": 0.50,  # ~repeat_penalty 1.15 di Ollama
-                    },
-                    timeout=qwen_timeout,  # 600s untuk proxy latency
-                )
-                resp.raise_for_status()
-            except requests.HTTPError as exc:
-                last_error = exc
-                status_code = exc.response.status_code if exc.response is not None else None
-                logger.warning(f"Qwen model={model_name} HTTP error: {exc}")
-                if status_code in (400, 404):
-                    break
-                if attempt == max_attempts:
-                    break
-                continue
-            except Exception as exc:
-                last_error = exc
-                logger.warning(f"Qwen model={model_name} request gagal: {exc}")
-                if attempt == max_attempts:
-                    break
-                continue
-
-            raw = (
-                resp.json()
-                .get("choices", [{}])[0]
-                .get("message", {})
-                .get("content", "")
-                .strip()
-            )
-            if not raw:
-                logger.warning(f"Qwen model={model_name} attempt {attempt}: response kosong, retry...")
-                continue
-
-            try:
-                return _parse_json_response(raw, profile)
-            except (json.JSONDecodeError, ValueError) as e:
-                last_error = e
-                logger.warning(f"Qwen model={model_name} attempt {attempt}/{max_attempts}: JSON parse gagal â€” {e}")
-                if attempt == max_attempts:
-                    break
-
-    raise RuntimeError(f"Qwen: semua model/attempt gagal. Error terakhir: {last_error}")
-
 
 def _call_groq(system_prompt: str, user_message: str, profile: str) -> dict:
     from groq import Groq
@@ -1681,7 +1600,7 @@ def review_and_iterate(script_data: dict, channel: dict, profile: str = "shorts"
     if profile != "shorts":
         return script_data
 
-    from engine.script_quality_scorer import score_script
+    from engine.script_quality_scorer import meets_quality_threshold, score_script
 
     current   = deepcopy(script_data)
     threshold = SHORTS_REVIEW_MIN_SCORE
@@ -1690,12 +1609,12 @@ def review_and_iterate(script_data: dict, channel: dict, profile: str = "shorts"
     # ── Step 1: Score draft awal dengan cross-provider scorer ─────────────────
     # Gunakan scorer yang BERBEDA dari generator asli (anti-sycophancy).
     # Generator asli tersimpan di script_data["quality_score"]["scorer_provider"]
-    # (di-set oleh _generate_and_pick_best). Jika tidak ada, default ke "ollama".
+    # (di-set oleh _generate_and_pick_best). Jika tidak ada, default ke Provider-B.
     original_scorer = (
-        script_data.get("quality_score", {}).get("scorer_provider", "ollama")
+        script_data.get("quality_score", {}).get("scorer_provider", "provider_b")
     )
     # Generator asli = kebalikan dari scorer (karena cross-provider scoring)
-    original_generator = "qwen" if original_scorer == "ollama" else "ollama"
+    original_generator = "provider_a" if original_scorer == "provider_b" else "provider_b"
 
     initial_quality = score_script(
         current,
@@ -1717,7 +1636,7 @@ def review_and_iterate(script_data: dict, channel: dict, profile: str = "shorts"
     revised_score  = initial_score
     feedback_loop_used = False
 
-    if initial_score < threshold and initial_critique:
+    if not meets_quality_threshold(initial_score, threshold) and initial_critique:
         logger.info(
             f"[{channel['id']}] [feedback_loop] Skor {initial_score:.1f} < threshold {threshold} "
             f"— mengirim critique ke {original_generator} untuk revisi..."
@@ -1785,7 +1704,7 @@ def review_and_iterate(script_data: dict, channel: dict, profile: str = "shorts"
         rewritten = False
         method_used = "none"
 
-        if initial_score < threshold and not feedback_loop_used:
+        if not meets_quality_threshold(initial_score, threshold) and not feedback_loop_used:
             logger.info(
                 f"[{channel['id']}] [review] Feedback loop tidak tersedia "
                 "— fallback ke legacy rewrite"
@@ -1819,7 +1738,7 @@ def review_and_iterate(script_data: dict, channel: dict, profile: str = "shorts"
         "critique":       initial_critique,
         "rewritten":      rewritten,
         "method":         method_used,   # "feedback_loop" | "legacy_rewrite" | "none"
-        "approved":       final_score >= threshold or rewritten,
+        "approved":       meets_quality_threshold(final_score, threshold) or rewritten,
         "generator_used": original_generator,
         "scorer_used":    original_scorer,
     }
@@ -1862,11 +1781,11 @@ def _review_script_payload(script_data: dict, channel: dict, threshold: float, m
 
 
 def _call_review_provider(provider: str, prompt: str) -> str:
-    if provider in ("DeepSeek/Ollama", "Qwen", "provider_a", "provider_b"):
+    if provider in ("provider_a", "provider_b"):
         slot = None
-        if provider in ("DeepSeek/Ollama", "provider_b"):
+        if provider == "provider_b":
             slot = "b"
-        elif provider in ("Qwen", "provider_a"):
+        elif provider == "provider_a":
             slot = "a"
 
         cfg = get_provider_config(slot)
@@ -1933,7 +1852,7 @@ def _call_review_provider(provider: str, prompt: str) -> str:
 def _trim_script_for_review(script_data: dict) -> dict:
     """
     Kirim hanya field yang relevan untuk reviewer.
-    Ini mengurangi ukuran prompt secara signifikan dan mencegah 400 dari Qwen.
+    Ini mengurangi ukuran prompt secara signifikan dan mencegah 400 dari provider.
     Reviewer tidak perlu tahu: quality_score, visual_beats, keywords, tags, description, dll.
     """
     return {
@@ -2122,11 +2041,9 @@ def _call_revision_with_feedback(
     )
 
     try:
-        if generator_provider == "qwen" and os.getenv("QWEN_API_KEY"):
-            return _call_qwen(system_prompt, user_message, profile)
-        else:
-            # Fallback ke Ollama jika Qwen tidak tersedia atau generator aslinya Ollama
-            return _call_ollama(system_prompt, user_message, profile)
+        if generator_provider == "provider_a":
+            return _call_provider_a(system_prompt, user_message, profile)
+        return _call_provider_b(system_prompt, user_message, profile)
     except Exception as exc:
         logger.warning(f"[{ch_id}] [feedback_loop] Revision call gagal: {exc}")
         return None

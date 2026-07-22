@@ -66,8 +66,7 @@ def _get_drive_service(channel: dict):
     if not os.path.exists(token_file):
         raise FileNotFoundError(f"Token tidak ditemukan: {token_file}")
 
-    with open(token_file, "r", encoding="utf-8") as f:
-        creds = Credentials.from_json(f.read())
+    creds = Credentials.from_authorized_user_file(token_file)
 
     if creds.expired and creds.refresh_token:
         from google.auth.transport.requests import Request
