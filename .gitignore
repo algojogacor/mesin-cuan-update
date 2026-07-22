@@ -149,6 +149,10 @@ _test_*.py
 _check_*.py
 strategi.bat
 strategi_cli.py
+tests/
+recordings/
+fix_ollama*.py
+patch_ollama.py
 
 
 # ══════════════════════════════════════════════════════════════
